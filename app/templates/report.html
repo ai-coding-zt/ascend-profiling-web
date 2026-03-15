@@ -732,15 +732,25 @@
     </h2>
     <div class="card">
         <p class="text-muted mb-4" style="font-size:14px;">
-            查看详细的算子时间线和设备活动。
+            查看详细的算子时间线和设备活动。支持多卡合并展示、缩放平移、框选询问 AI。
         </p>
-        <button class="btn btn-primary btn-lg" id="trace-open-btn" onclick="loadPerfettoTrace('{{ job.id }}')">
+        <button class="btn btn-primary btn-lg" id="trace-open-btn" onclick="loadSwimlaneTrace('{{ job.id }}')">
             <i data-lucide="play" style="width:16px;height:16px;"></i> 加载 Trace 视图
         </button>
-        <div id="trace-status"></div>
-    </div>
-    <div id="perfetto-container" style="display:none;margin-top:16px;border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;">
-        <iframe id="perfetto-iframe" style="width:100%;height:75vh;border:none;"></iframe>
+        <div class="swimlane-toolbar" id="swimlane-toolbar" style="display:none;">
+            <button class="btn btn-sm btn-secondary" id="swimlane-reset">
+                <i data-lucide="maximize-2" style="width:14px;height:14px;"></i> 重置视图
+            </button>
+            <button class="btn btn-sm btn-secondary" id="swimlane-select-mode">
+                <i data-lucide="square-dashed-mouse-pointer" style="width:14px;height:14px;"></i> 选区模式
+            </button>
+            <span class="swimlane-toolbar-hint">滚轮缩放 | 拖拽平移 | Shift+拖拽框选 | 双击重置</span>
+            <div id="swimlane-legend" class="swimlane-legend"></div>
+        </div>
+        <div id="swimlane-container" class="swimlane-container" style="display:none;">
+            <!-- 三层 canvas 由 JS 动态创建 -->
+        </div>
+        <div id="swimlane-status"></div>
     </div>
 </div>
 {% endif %}
@@ -759,7 +769,7 @@
 {% block scripts %}
 {% if report %}
 <script src="/static/js/report.js"></script>
-<script src="/static/js/perfetto.js"></script>
+<script src="/static/js/swimlane.js"></script>
 <script src="/static/js/questions.js"></script>
 {% endif %}
 {% endblock %}

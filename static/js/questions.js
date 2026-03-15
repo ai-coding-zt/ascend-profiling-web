@@ -1427,4 +1427,125 @@
         setTimeout(() => saveChatSession(), 500);
     }, 300);
     setupTocTracking();
+
+    // ─── 框选询问 AI（供泳道图和报告区域调用） ───
+    window.askAIAboutSelection = function(contextText, autoQuestion) {
+        if (!input || !chatPanel) return;
+        // 展开聊天面板（如果收起）
+        if (chatPanel.classList.contains('collapsed')) {
+            const toggle = document.getElementById('chat-toggle');
+            if (toggle) toggle.click();
+        }
+        // 将 context 写入隐藏字段（通过修改 getCurrentSection 的行为）
+        window.__selectionContext = contextText;
+        // 填入问题并发送
+        input.value = autoQuestion || '请分析上述选区内容。';
+        input.focus();
+        // 自动触发发送
+        setTimeout(() => {
+            if (window.sendChatMessage) window.sendChatMessage();
+        }, 100);
+    };
+
+    // 代理 sendChatMessage 以支持框选上下文注入
+    const _origSend = window.sendChatMessage;
+    window.sendChatMessage = async function() {
+        if (window.__selectionContext) {
+            // 直接调用 chat API，注入选区上下文
+            const text = input.value.trim();
+            if (!text && imagePaths.length === 0) return;
+
+            const sendBtn = document.getElementById('chat-send');
+            sendBtn.disabled = true;
+            addMessage(text || '(截图)', 'user', [...imagePaths]);
+
+            const context = window.__selectionContext;
+            window.__selectionContext = null;
+            const msgImages = [...imagePaths];
+            input.value = '';
+            imagePaths = [];
+            imagesDiv.innerHTML = '';
+            addThinkingIndicator();
+
+            try {
+                const resp = await fetch('/api/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        job_id: window.__JOB_ID__ || null,
+                        message: text,
+                        context: context,
+                        image_paths: msgImages,
+                    }),
+                });
+                if (!resp.ok) {
+                    removeThinkingIndicator();
+                    addMessage('发送失败，请重试。', 'bot');
+                    sendBtn.disabled = false;
+                    input.focus();
+                    return;
+                }
+                // Stream the response (reuse the same SSE streaming logic)
+                let contentEl = null;
+                const reader = resp.body.getReader();
+                const decoder = new TextDecoder();
+                let fullText = '';
+                let renderPending = false;
+                let lastRenderLen = 0;
+
+                function doRender() {
+                    if (!contentEl || fullText.length === lastRenderLen) return;
+                    lastRenderLen = fullText.length;
+                    contentEl.innerHTML = renderMarkdown(fullText);
+                    messagesDiv.scrollTop = messagesDiv.scrollHeight;
+                    renderPending = false;
+                }
+                function scheduleRender() {
+                    if (!renderPending) { renderPending = true; requestAnimationFrame(doRender); }
+                }
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    const chunk = decoder.decode(value, { stream: true });
+                    const lines = chunk.split('\n');
+                    for (const line of lines) {
+                        if (!line.startsWith('data: ')) continue;
+                        const payload = line.slice(6);
+                        if (payload === '[DONE]') continue;
+                        try {
+                            const parsed = JSON.parse(payload);
+                            if (parsed.type === 'text' || parsed.type === 'content_block_delta') {
+                                const txt = parsed.text || parsed.delta?.text || '';
+                                if (txt) {
+                                    if (!contentEl) { removeThinkingIndicator(); const el = addMessage('', 'bot'); contentEl = el.querySelector('.chat-msg-content'); }
+                                    fullText += txt;
+                                    scheduleRender();
+                                }
+                            }
+                        } catch(e) {
+                            // 尝试直接追加
+                            if (payload && payload !== '[DONE]') {
+                                if (!contentEl) { removeThinkingIndicator(); const el = addMessage('', 'bot'); contentEl = el.querySelector('.chat-msg-content'); }
+                                fullText += payload;
+                                scheduleRender();
+                            }
+                        }
+                    }
+                }
+                doRender();
+                if (!contentEl) { removeThinkingIndicator(); addMessage(fullText || '(无回复)', 'bot'); }
+                sendBtn.disabled = false;
+                input.focus();
+                saveChatSession();
+            } catch(err) {
+                removeThinkingIndicator();
+                addMessage('请求失败: ' + err.message, 'bot');
+                sendBtn.disabled = false;
+                input.focus();
+            }
+            return;
+        }
+        return _origSend();
+    };
 })();
