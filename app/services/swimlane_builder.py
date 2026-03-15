@@ -1,4 +1,10 @@
-"""泳道数据构建器 — 扫描多卡 trace_view.json 并合并为统一泳道结构。"""
+"""泳道数据构建器 — 扫描多卡 trace_view.json，按模块分组合并为统一泳道结构。
+
+模块分组（用于多卡对比）:
+  1. Ascend Hardware — NPU 设备算子（按 Stream 分子泳道）
+  2. Communication  — HCCL 通信 + CCU
+  3. Overlap Analysis — 计算/通信重叠分析
+"""
 
 import json
 import logging
@@ -6,40 +12,42 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# trace 文件搜索模式（使用递归通配符覆盖深层嵌套目录）
-_TRACE_PATTERNS = [
-    "**/trace_view.json",
-]
+# 事件数量上限
+_MAX_EVENTS = 200_000
+
+# 模块定义：process_name → module_id
+_MODULE_MAP = {
+    "Ascend Hardware": "ascend_hw",
+    "Communication": "communication",
+    "CCU": "communication",
+    "Overlap Analysis": "overlap",
+}
+
+# 模块显示信息
+_MODULE_INFO = {
+    "ascend_hw": {"label": "Ascend Hardware", "color": "#4ecdc4", "order": 0},
+    "communication": {"label": "Communication", "color": "#f39c12", "order": 1},
+    "overlap": {"label": "Overlap Analysis", "color": "#2ecc71", "order": 2},
+}
 
 # 类别颜色映射
 _CATEGORIES = {
-    "cpu_op": {"color": "#3498db", "label": "CPU 算子"},
-    "kernel": {"color": "#4ecdc4", "label": "设备算子"},
+    "ascend_hw": {"color": "#4ecdc4", "label": "设备算子"},
     "communication": {"color": "#f39c12", "label": "通信"},
-    "hccl": {"color": "#f39c12", "label": "HCCL 通信"},
-    "runtime": {"color": "#9b59b6", "label": "Runtime"},
-    "memory": {"color": "#e74c3c", "label": "内存"},
-    "overlap": {"color": "#2ecc71", "label": "计算通信重叠"},
-    "other": {"color": "#95a5a6", "label": "其他"},
+    "overlap_computing": {"color": "#3498db", "label": "计算"},
+    "overlap_comm": {"color": "#f39c12", "label": "通信"},
+    "overlap_comm_no": {"color": "#e74c3c", "label": "通信(未重叠)"},
+    "overlap_free": {"color": "#95a5a6", "label": "空闲"},
+    "other": {"color": "#9b59b6", "label": "其他"},
 }
 
 
-def _guess_rank(trace_path: Path, workdir: Path) -> str:
-    """从文件路径推断 rank 标识。
-
-    实际路径示例:
-    PROF_xxx/localhost.localdomain_268228_20260205_ascend_pt/ASCEND_PROFILER_OUTPUT/trace_view.json
-    rank_0/trace_view.json
-    device_0/trace_view.json
-    trace_view.json
-    """
+def _guess_rank_index(trace_path: Path, workdir: Path) -> int:
+    """从文件路径推断 rank 序号（用于排序和标签）。"""
     rel = trace_path.relative_to(workdir)
-    parts = rel.parts  # 不含文件名本身，parts[-1] 是 "trace_view.json"
-
-    # 遍历所有目录层级，尝试匹配已知模式
+    parts = rel.parts
     for part in parts[:-1]:
         lower = part.lower()
-        # rank_0, device_0 等直接模式
         for prefix in ("rank_", "device_"):
             if lower.startswith(prefix):
                 suffix = part[len(prefix):]
@@ -50,101 +58,69 @@ def _guess_rank(trace_path: Path, workdir: Path) -> str:
                     else:
                         break
                 if digits:
-                    return f"rank{int(digits)}"
-
-    # 对于 localhost.localdomain_{pid}_{ts}_ascend_pt 这种格式，
-    # 用 pid 作为标识（同一机器上不同进程代表不同 rank）
-    for part in parts[:-1]:
-        if "_ascend_pt" in part:
-            # 提取 pid: hostname_PID_timestamp_ascend_pt
-            segments = part.split("_")
-            for i, seg in enumerate(segments):
-                if seg.isdigit() and len(seg) >= 3:
-                    return f"pid{seg}"
-
-    # 退回使用父目录名作为标识
-    if len(parts) > 1:
-        return parts[-2].replace(" ", "_")[:20]
-
-    return "rank0"
+                    return int(digits)
+    # 对于 hostname_{pid}_{ts}_ascend_pt 格式，用发现顺序
+    return -1  # 标记为需要后续分配
 
 
-def _classify_event(evt: dict) -> str:
-    """根据事件属性分类。"""
-    cat = evt.get("cat", "").lower()
-    name = evt.get("name", "").lower()
-
-    if "hccl" in cat or "hccl" in name or "allreduce" in name or "allgather" in name:
-        return "communication"
-    if "kernel" in cat or "compute" in cat:
-        return "kernel"
-    if "cpu" in cat or "cpu_op" in cat:
-        return "cpu_op"
-    if "runtime" in cat:
-        return "runtime"
-    if "memory" in cat or "mem" in cat:
-        return "memory"
-    if "overlap" in cat:
-        return "overlap"
-    if cat:
-        return cat  # 保留原始分类
+def _classify_overlap_thread(thread_name: str) -> str:
+    """Overlap Analysis 子线程分类。"""
+    tn = thread_name.lower()
+    if "not overlapped" in tn or "not_overlapped" in tn:
+        return "overlap_comm_no"
+    if "communication" in tn:
+        return "overlap_comm"
+    if "computing" in tn:
+        return "overlap_computing"
+    if "free" in tn:
+        return "overlap_free"
     return "other"
 
 
-# 事件数量上限 — 超过此数量时自动过滤短事件
-_MAX_EVENTS = 200_000
-
-
 def build_swimlane_data(workdir: Path) -> dict:
-    """扫描 workdir 下所有 rank 的 trace 文件，构建统一泳道数据。
+    """按模块分组构建泳道数据，每个模块下按 rank 排列子泳道。
 
-    当事件总量超过 _MAX_EVENTS 时，自动过滤掉短事件以保持前端性能。
-
-    返回值格式:
-    {
-        "timeRange": {"start": 0, "end": ...},
-        "unit": "us",
-        "lanes": [...],
-        "categories": {...},
-        "totalOriginal": int,
-        "filtered": bool,
-        "minDurFilter": float
-    }
+    输出结构:
+    lanes = [
+      { id: "ascend_hw",     label: "Ascend Hardware",  sublanes: [Device 0 Stream 7, Device 0 Stream 12, Device 1 Stream 7, ...] },
+      { id: "communication", label: "Communication",    sublanes: [Device 0 Group..., Device 1 Group..., ...] },
+      { id: "overlap",       label: "Overlap Analysis",  sublanes: [Device 0 Computing, Device 0 Communication, ...] },
+    ]
     """
     # 1. 发现所有 trace 文件
-    trace_files: list[tuple[str, Path]] = []
+    trace_files: list[tuple[int, Path]] = []
     seen_paths: set[str] = set()
 
-    for pattern in _TRACE_PATTERNS:
-        for p in sorted(workdir.glob(pattern)):
-            real = str(p.resolve())
-            if real in seen_paths:
-                continue
-            seen_paths.add(real)
-            rank_id = _guess_rank(p, workdir)
-            # 如果同一 rank 已有文件，添加后缀
-            existing = [r for r, _ in trace_files if r == rank_id]
-            if existing:
-                rank_id = f"{rank_id}_{len(existing)}"
-            trace_files.append((rank_id, p))
+    for p in sorted(workdir.glob("**/trace_view.json")):
+        real = str(p.resolve())
+        if real in seen_paths:
+            continue
+        seen_paths.add(real)
+        rank_idx = _guess_rank_index(p, workdir)
+        trace_files.append((rank_idx, p))
 
     if not trace_files:
-        return {
-            "timeRange": {"start": 0, "end": 0},
-            "unit": "us",
-            "lanes": [],
-            "categories": _CATEGORIES,
-        }
+        return {"timeRange": {"start": 0, "end": 0}, "unit": "us", "lanes": [], "categories": _CATEGORIES}
 
-    # 2. 解析所有 trace 文件
+    # 分配自动 rank 序号
+    auto_idx = 0
+    assigned: list[tuple[int, Path]] = []
+    for idx, p in trace_files:
+        if idx < 0:
+            idx = auto_idx
+        auto_idx = max(auto_idx, idx) + 1
+        assigned.append((idx, p))
+    trace_files = sorted(assigned, key=lambda x: x[0])
+
+    # 2. 解析所有 trace 文件，提取进程元数据和事件
     global_min_ts = float("inf")
     global_max_ts = 0.0
-    # rank_id -> {sublane_key -> [events]}
-    raw_lanes: dict[str, dict[str, list[dict]]] = {}
-    # B/E 配对缓冲
-    pending_be: dict[str, dict] = {}  # key -> B event
 
-    for rank_id, trace_path in trace_files:
+    # module_id -> [(rank_idx, sublane_label, [events])]
+    module_sublanes: dict[str, list[tuple[int, str, list[dict]]]] = {}
+    total_original = 0
+
+    for rank_idx, trace_path in trace_files:
         try:
             with open(trace_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
@@ -152,156 +128,153 @@ def build_swimlane_data(workdir: Path) -> dict:
             logger.warning("跳过无法解析的 trace 文件 %s: %s", trace_path, e)
             continue
 
-        events = data if isinstance(data, list) else data.get("traceEvents", [])
-        if not events:
+        events_list = data if isinstance(data, list) else data.get("traceEvents", [])
+        if not events_list:
             continue
 
-        if rank_id not in raw_lanes:
-            raw_lanes[rank_id] = {}
+        # 提取进程/线程元数据
+        pid_to_process: dict[int, str] = {}  # pid -> process_name
+        tid_to_thread: dict[tuple[int, int], str] = {}  # (pid,tid) -> thread_name
 
-        for evt in events:
+        for evt in events_list:
+            if evt.get("ph") != "M":
+                continue
+            pid = evt.get("pid", 0)
+            args = evt.get("args", {})
+            if evt.get("name") == "process_name":
+                pid_to_process[pid] = args.get("name", "")
+            elif evt.get("name") == "thread_name":
+                tid = evt.get("tid", 0)
+                tid_to_thread[(pid, tid)] = args.get("name", "")
+
+        # 按 pid 分组收集事件
+        pid_events: dict[int, dict[int, list[dict]]] = {}  # pid -> tid -> [events]
+        pending_be: dict[str, dict] = {}
+
+        for evt in events_list:
             ph = evt.get("ph")
             ts = evt.get("ts")
-            if ts is None:
+            if ts is None or ph not in ("X", "B", "E"):
                 continue
 
             ts = float(ts)
             pid = evt.get("pid", 0)
             tid = evt.get("tid", 0)
-            sublane_key = f"{rank_id}_p{pid}_t{tid}"
 
             if ph == "X":
-                # 完整事件
                 dur = float(evt.get("dur", 0))
-                cat = _classify_event(evt)
-                out_evt = {
-                    "ts": ts,
-                    "dur": dur,
-                    "name": evt.get("name", ""),
-                    "cat": cat,
-                }
-                if evt.get("args"):
-                    out_evt["args"] = evt["args"]
-                raw_lanes[rank_id].setdefault(sublane_key, []).append(out_evt)
+                out_evt = {"ts": ts, "dur": dur, "name": evt.get("name", "")}
+                pid_events.setdefault(pid, {}).setdefault(tid, []).append(out_evt)
                 global_min_ts = min(global_min_ts, ts)
                 global_max_ts = max(global_max_ts, ts + dur)
-
+                total_original += 1
             elif ph == "B":
-                # 开始事件 — 缓存等待配对
-                be_key = f"{sublane_key}_{evt.get('name', '')}_{pid}_{tid}"
+                be_key = f"{rank_idx}_{pid}_{tid}_{evt.get('name', '')}"
                 pending_be[be_key] = evt
-
             elif ph == "E":
-                # 结束事件 — 配对
-                be_key = f"{sublane_key}_{evt.get('name', '')}_{pid}_{tid}"
+                be_key = f"{rank_idx}_{pid}_{tid}_{evt.get('name', '')}"
                 b_evt = pending_be.pop(be_key, None)
                 if b_evt:
                     b_ts = float(b_evt.get("ts", ts))
-                    dur = ts - b_ts
-                    if dur < 0:
-                        dur = 0
-                    cat = _classify_event(b_evt)
-                    out_evt = {
-                        "ts": b_ts,
-                        "dur": dur,
-                        "name": b_evt.get("name", ""),
-                        "cat": cat,
-                    }
-                    args = b_evt.get("args", {})
-                    if evt.get("args"):
-                        args.update(evt["args"])
-                    if args:
-                        out_evt["args"] = args
-                    raw_lanes[rank_id].setdefault(sublane_key, []).append(out_evt)
+                    dur = max(0, ts - b_ts)
+                    out_evt = {"ts": b_ts, "dur": dur, "name": b_evt.get("name", "")}
+                    pid_events.setdefault(pid, {}).setdefault(tid, []).append(out_evt)
                     global_min_ts = min(global_min_ts, b_ts)
                     global_max_ts = max(global_max_ts, b_ts + dur)
+                    total_original += 1
+
+        # 将事件分配到模块
+        for pid, tid_map in pid_events.items():
+            proc_name = pid_to_process.get(pid, "")
+            module_id = _MODULE_MAP.get(proc_name)
+            if not module_id:
+                continue  # 跳过 Python/CANN 等 CPU 侧事件
+
+            for tid, evts in sorted(tid_map.items()):
+                if not evts:
+                    continue
+                thread_name = tid_to_thread.get((pid, tid), f"Thread {tid}")
+
+                # 为事件添加类别标记
+                if module_id == "overlap":
+                    cat = _classify_overlap_thread(thread_name)
+                    for e in evts:
+                        e["cat"] = cat
+                elif module_id == "communication":
+                    for e in evts:
+                        e["cat"] = "communication"
+                else:
+                    for e in evts:
+                        e["cat"] = "ascend_hw"
+
+                sublane_label = f"Device {rank_idx} / {thread_name}"
+                module_sublanes.setdefault(module_id, []).append(
+                    (rank_idx, sublane_label, evts)
+                )
 
     if global_min_ts == float("inf"):
         global_min_ts = 0.0
 
-    # 3. 智能过滤 — 如果事件总数过多，逐步提高 dur 门槛
-    total_events = sum(
-        len(evts) for sublane_map in raw_lanes.values() for evts in sublane_map.values()
-    )
-    total_original = total_events
+    # 3. 智能过滤
+    all_events_flat = []
+    for sublane_list in module_sublanes.values():
+        for _, _, evts in sublane_list:
+            all_events_flat.extend(evts)
+
     min_dur_filter = 0.0
     filtered = False
 
-    if total_events > _MAX_EVENTS:
-        # 收集所有事件的 dur 值，找到合适的过滤阈值
-        all_durs = []
-        for sublane_map in raw_lanes.values():
-            for evts in sublane_map.values():
-                all_durs.extend(e["dur"] for e in evts)
-        all_durs.sort()
-        # 需要保留 _MAX_EVENTS 个事件，即去掉最短的 N 个
+    if len(all_events_flat) > _MAX_EVENTS:
+        all_durs = sorted(e["dur"] for e in all_events_flat)
         cut_idx = len(all_durs) - _MAX_EVENTS
-        if cut_idx > 0 and cut_idx < len(all_durs):
+        if 0 < cut_idx < len(all_durs):
             min_dur_filter = all_durs[cut_idx]
             filtered = True
-            # 过滤
-            for sublane_map in raw_lanes.values():
-                for key in sublane_map:
-                    sublane_map[key] = [e for e in sublane_map[key] if e["dur"] >= min_dur_filter]
-            logger.info(
-                "事件过滤: %d → %d (dur >= %.2f us)",
-                total_original, _MAX_EVENTS, min_dur_filter,
-            )
+            for sublane_list in module_sublanes.values():
+                for i, (rank_idx, label, evts) in enumerate(sublane_list):
+                    sublane_list[i] = (rank_idx, label, [e for e in evts if e["dur"] >= min_dur_filter])
+            logger.info("事件过滤: %d → ≤%d (dur >= %.2f us)", total_original, _MAX_EVENTS, min_dur_filter)
 
-    # 4. 时间归一化 + 排序 + 构建输出结构
+    # 4. 时间归一化 + 排序 + 构建输出
     lanes = []
     collected_cats: set[str] = set()
 
-    for rank_id in sorted(raw_lanes.keys()):
-        sublane_map = raw_lanes[rank_id]
-        sublanes = []
+    for module_id in sorted(_MODULE_INFO.keys(), key=lambda m: _MODULE_INFO[m]["order"]):
+        if module_id not in module_sublanes:
+            continue
 
-        for sublane_key in sorted(sublane_map.keys()):
-            events = sublane_map[sublane_key]
-            if not events:
-                continue  # 过滤后可能为空
-            # 归一化时间戳
-            for e in events:
+        sublane_list = module_sublanes[module_id]
+        # 按 rank_idx 排序，保证多卡对齐
+        sublane_list.sort(key=lambda x: (x[0], x[1]))
+
+        sublanes = []
+        for rank_idx, label, evts in sublane_list:
+            if not evts:
+                continue
+            for e in evts:
                 e["ts"] = round(e["ts"] - global_min_ts, 2)
                 e["dur"] = round(e["dur"], 2)
-                collected_cats.add(e["cat"])
-            # 去掉 args 以减小 JSON 体积
-            for e in events:
-                e.pop("args", None)
-            # 按 ts 排序（前端二分查找依赖）
-            events.sort(key=lambda e: e["ts"])
-            # 从 sublane_key 提取可读标签
-            parts = sublane_key.split("_")
-            label = sublane_key
-            if len(parts) >= 3:
-                label = f"PID {parts[-2][1:]} / TID {parts[-1][1:]}"
+                collected_cats.add(e.get("cat", module_id))
+            evts.sort(key=lambda e: e["ts"])
             sublanes.append({
-                "id": sublane_key,
+                "id": f"{module_id}_r{rank_idx}_{label}",
                 "label": label,
-                "events": events,
+                "events": evts,
             })
 
         if not sublanes:
             continue
 
-        # rank 标签 — 按顺序编号
-        rank_idx = len(lanes)
-        if rank_id.startswith("rank") and rank_id[4:].isdigit():
-            label = f"Device {rank_id[4:]}"
-        elif rank_id.startswith("pid"):
-            label = f"Device {rank_idx} (PID {rank_id[3:]})"
-        else:
-            label = f"Device {rank_idx}"
-
+        info = _MODULE_INFO[module_id]
         lanes.append({
-            "id": rank_id,
-            "label": label,
+            "id": module_id,
+            "label": info["label"],
             "sublanes": sublanes,
         })
 
     total_end = round(global_max_ts - global_min_ts, 2)
+    total_retained = sum(len(s["events"]) for l in lanes for s in l["sublanes"])
 
-    # 构建类别映射（仅包含实际出现的类别）
     categories = {}
     for cat in sorted(collected_cats):
         if cat in _CATEGORIES:
@@ -315,6 +288,7 @@ def build_swimlane_data(workdir: Path) -> dict:
         "lanes": lanes,
         "categories": categories,
         "totalOriginal": total_original,
+        "totalRetained": total_retained,
         "filtered": filtered,
         "minDurFilter": round(min_dur_filter, 2),
     }
