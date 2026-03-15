@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+
+{% block title %}昇腾 Profiling 分析平台{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>昇腾 NPU Profiling 分析</h1>
+    <p>上传 profiling 数据归档，自动生成可视化分析报告</p>
+</div>
+
+<!-- Upload Dropzone -->
+<div class="dropzone" id="dropzone">
+    <div class="dropzone-icon">&#128230;</div>
+    <div class="dropzone-text">拖拽文件到此处或点击选择</div>
+    <div class="dropzone-hint">支持 .tar.gz / .zip / .rar 格式，最大 2GB</div>
+    <input type="file" id="file-input" accept=".tar.gz,.tgz,.tar,.zip,.rar,.tar.bz2">
+</div>
+
+<div id="upload-progress" style="display:none;">
+    <div class="card">
+        <div class="card-title">上传中...</div>
+        <div class="progress-bar"><div class="fill" id="progress-fill" style="width:0%"></div></div>
+        <div id="upload-status" class="text-muted" style="font-size:13px;"></div>
+    </div>
+</div>
+
+<!-- Jobs Table -->
+<div class="report-section">
+    <h2 class="section-title">分析任务</h2>
+    {% if jobs %}
+    <div class="table-scroll">
+        <table class="jobs-table" id="jobs-table">
+            <thead>
+                <tr>
+                    <th>文件名</th>
+                    <th>状态</th>
+                    <th>创建时间</th>
+                    <th>操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for job in jobs %}
+                <tr id="job-{{ job.id }}">
+                    <td>{{ job.filename }}</td>
+                    <td>
+                        <span class="badge badge-{{ job.status }}">{{ job.status }}</span>
+                        {% if job.error %}
+                        <span class="text-muted" style="font-size:12px;display:block;margin-top:4px;">{{ job.error[:80] }}</span>
+                        {% endif %}
+                    </td>
+                    <td class="text-muted" style="font-size:13px;">{{ job.created_at }}</td>
+                    <td>
+                        {% if job.status == 'done' %}
+                        <a href="/report/{{ job.id }}">查看报告</a>
+                        {% elif job.status in ('queued', 'unpacking', 'analyzing') %}
+                        <span class="text-muted">处理中...</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="empty-state">
+        <div class="empty-state-icon">&#128202;</div>
+        <p>暂无分析任务，上传 profiling 数据开始分析</p>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/upload.js"></script>
+{% endblock %}

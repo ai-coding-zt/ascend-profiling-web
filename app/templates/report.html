@@ -1,0 +1,316 @@
+{% extends "base.html" %}
+
+{% block title %}分析报告 - {{ job.filename }}{% endblock %}
+
+{% block head %}
+<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Profiling 分析报告</h1>
+    <p>{{ job.filename }} &middot; {{ job.created_at }}</p>
+</div>
+
+{% if job.status != 'done' %}
+<div class="card">
+    <div class="card-title">
+        <span class="badge badge-{{ job.status }}">{{ job.status }}</span>
+        {% if job.status == 'failed' %}
+        <span style="color:var(--danger);font-size:14px;">{{ job.error }}</span>
+        {% else %}
+        <span class="text-muted">分析进行中，请稍候...</span>
+        {% endif %}
+    </div>
+    {% if job.status in ('queued', 'unpacking', 'analyzing') %}
+    <div class="progress-bar"><div class="fill" style="width:50%;animation:pulse 1.5s infinite;"></div></div>
+    <script>
+        const es = new EventSource('/api/jobs/{{ job.id }}/events');
+        es.addEventListener('status', e => {
+            const d = JSON.parse(e.data);
+            if (d.status === 'done') location.reload();
+        });
+        es.addEventListener('done', () => { es.close(); location.reload(); });
+        es.addEventListener('error', e => {
+            try { const d = JSON.parse(e.data); console.error(d); } catch(x) {}
+        });
+    </script>
+    {% endif %}
+</div>
+{% endif %}
+
+{% if report %}
+<!-- ─── Basic Info ─── -->
+<div class="report-section">
+    <h2 class="section-title">概览</h2>
+    <div class="info-grid">
+        {% if report.op_analysis and report.op_analysis|length > 0 %}
+        <div class="info-item">
+            <div class="info-label">总算子数</div>
+            <div class="info-value">{{ report.op_analysis[0].total_ops }}</div>
+        </div>
+        <div class="info-item">
+            <div class="info-label">算子总耗时</div>
+            <div class="info-value">{{ "%.2f"|format(report.op_analysis[0].total_time_us / 1000) }} ms</div>
+        </div>
+        {% endif %}
+        {% if report.step_trace and report.step_trace|length > 0 %}
+        <div class="info-item">
+            <div class="info-label">迭代数</div>
+            <div class="info-value">{{ report.step_trace[0].step_count }}</div>
+        </div>
+        <div class="info-item">
+            <div class="info-label">平均迭代时间</div>
+            <div class="info-value">{{ "%.2f"|format(report.step_trace[0].mean_step_time_us / 1000) }} ms</div>
+        </div>
+        {% endif %}
+        {% if report.communication and report.communication|length > 0 %}
+        <div class="info-item">
+            <div class="info-label">通信次数</div>
+            <div class="info-value">{{ report.communication[0].total_communications }}</div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- ─── Step Trace Breakdown ─── -->
+{% if report.step_trace and report.step_trace|length > 0 %}
+{% set st = report.step_trace[0] %}
+<div class="report-section">
+    <h2 class="section-title">迭代时间分解</h2>
+    <p class="text-muted mb-4" style="font-size:14px;">
+        共 {{ st.step_count }} 个 step，平均迭代: {{ "%.2f"|format(st.mean_step_time_us / 1000) }} ms
+    </p>
+    {% for field, info in st.breakdown.items() %}
+    {% set bar_class = "computing" if field == "Computing" else ("communication" if "Commun" in field else ("overlapped" if field == "Overlapped" else ("free" if field == "Free" else ("data-aug" if "Data" in field else "other")))) %}
+    <div class="step-bar">
+        <span class="step-label">{{ field }}</span>
+        <div class="step-track">
+            <div class="step-fill {{ bar_class }}" style="width: {{ info.pct }}%"></div>
+        </div>
+        <span class="step-pct">{{ "%.1f"|format(info.pct) }}%</span>
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
+
+<!-- ─── Cube / Vector Distribution ─── -->
+{% if report.op_analysis and report.op_analysis|length > 0 %}
+{% set op = report.op_analysis[0] %}
+<div class="report-section">
+    <h2 class="section-title">核心类型分布</h2>
+    <div class="chart-row">
+        <div class="card">
+            <div class="card-title"><span class="icon">&#127856;</span> 耗时占比</div>
+            <div class="chart-container" id="chart-pie"></div>
+        </div>
+        <div class="card">
+            <div class="card-title"><span class="icon">&#128202;</span> 按 OP Type 分布</div>
+            <div class="chart-container" id="chart-type-bar"></div>
+        </div>
+    </div>
+</div>
+
+<!-- ─── Top-N Slow Operators ─── -->
+<div class="report-section">
+    <h2 class="section-title">Top 慢算子</h2>
+    <div class="table-scroll">
+        <table class="data-table" id="top-ops-table">
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>名称</th>
+                    <th>类型</th>
+                    <th class="num">耗时 (us)</th>
+                    <th class="num">占比</th>
+                    <th class="num">累计</th>
+                    <th>核心</th>
+                    <th>Bound</th>
+                    <th>Shapes</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for o in op.top_ops %}
+                <tr>
+                    <td class="num">{{ loop.index }}</td>
+                    <td class="name-cell" title="{{ o.name }}">{{ o.name[:35] }}</td>
+                    <td>{{ o.type }}</td>
+                    <td class="num">{{ "%.1f"|format(o.duration_us) }}</td>
+                    <td class="num">{{ "%.1f"|format(o.pct) }}%</td>
+                    <td class="num">{{ "%.1f"|format(o.cumulative_pct) }}%</td>
+                    <td><span class="badge badge-{{ 'done' if o.category == 'cube' else ('analyzing' if o.category == 'vector' else 'queued') }}">{{ o.category }}</span></td>
+                    <td>{{ o.bound }}</td>
+                    <td class="name-cell text-mono" title="{{ o.shapes }}">{{ o.shapes[:30] }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- ─── Jitter Analysis ─── -->
+{% if op.jitter and op.jitter|length > 0 %}
+<div class="report-section">
+    <h2 class="section-title">同 Shape 算子抖动分析</h2>
+    <p class="text-muted mb-4" style="font-size:14px;">
+        CV (变异系数) > 5% 标记为抖动警告。Cube/Mix 算子抖动可能由 NPU 降频引起。
+    </p>
+    <div class="table-scroll">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>类型</th>
+                    <th>核心</th>
+                    <th class="num">次数</th>
+                    <th class="num">均值 (us)</th>
+                    <th class="num">标准差</th>
+                    <th class="num">CV</th>
+                    <th class="num">最小</th>
+                    <th class="num">最大</th>
+                    <th class="num">占比</th>
+                    <th>Shapes</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for j in op.jitter %}
+                <tr class="{{ 'jitter-warn' if j.cv > 0.05 else '' }}">
+                    <td>{{ j.type }}</td>
+                    <td>{{ j.category }}</td>
+                    <td class="num">{{ j.count }}</td>
+                    <td class="num">{{ "%.1f"|format(j.mean_us) }}</td>
+                    <td class="num">{{ "%.1f"|format(j.std_us) }}</td>
+                    <td class="num" style="{{ 'color:var(--danger);font-weight:600' if j.cv > 0.05 else '' }}">{{ "%.2f"|format(j.cv * 100) }}%</td>
+                    <td class="num">{{ "%.1f"|format(j.min_us) }}</td>
+                    <td class="num">{{ "%.1f"|format(j.max_us) }}</td>
+                    <td class="num">{{ "%.1f"|format(j.pct) }}%</td>
+                    <td class="name-cell text-mono" title="{{ j.shapes }}">{{ j.shapes[:30] }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+{% endif %}
+
+<!-- ─── Communication Analysis ─── -->
+{% if report.communication and report.communication|length > 0 %}
+{% set cm = report.communication[0] %}
+<div class="report-section">
+    <h2 class="section-title">通信分析</h2>
+    <div class="card">
+        <div class="card-title"><span class="icon">&#128225;</span> 通信耗时与带宽</div>
+        <div class="chart-container" id="chart-comm"></div>
+    </div>
+    <div class="table-scroll mt-4">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>通信类型</th>
+                    <th class="num">次数</th>
+                    <th class="num">耗时 (us)</th>
+                    <th class="num">占比</th>
+                    <th class="num">数据量 (MB)</th>
+                    <th class="num">带宽 (GB/s)</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for tp in cm.by_type %}
+                <tr>
+                    <td>{{ tp.type }}</td>
+                    <td class="num">{{ tp.count }}</td>
+                    <td class="num">{{ "%.1f"|format(tp.time_us) }}</td>
+                    <td class="num">{{ "%.1f"|format(tp.pct) }}%</td>
+                    <td class="num">{{ "%.1f"|format(tp.size_mb) }}</td>
+                    <td class="num">{{ "%.1f"|format(tp.bandwidth_gbps) }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+
+<!-- ─── Optimization Suggestions ─── -->
+{% set all_suggestions = [] %}
+{% if report.op_analysis %}
+    {% for op in report.op_analysis %}
+        {% for s in op.get('suggestions', []) %}
+            {% if all_suggestions.append(s) %}{% endif %}
+        {% endfor %}
+    {% endfor %}
+{% endif %}
+{% if report.step_trace %}
+    {% for st in report.step_trace %}
+        {% for s in st.get('suggestions', []) %}
+            {% if all_suggestions.append(s) %}{% endif %}
+        {% endfor %}
+    {% endfor %}
+{% endif %}
+
+{% if all_suggestions|length > 0 %}
+<div class="report-section">
+    <h2 class="section-title">优化建议</h2>
+    <div class="suggestions">
+        {% for s in all_suggestions %}
+        {% set level = 'high' if s.startswith('[HIGH]') else ('medium' if s.startswith('[MEDIUM]') else 'low') %}
+        {% set label = 'HIGH' if level == 'high' else ('MEDIUM' if level == 'medium' else 'LOW') %}
+        {% set text = s.replace('[HIGH] ', '').replace('[MEDIUM] ', '').replace('[LOW] ', '') %}
+        <div class="suggestion suggestion-{{ level }}">
+            <span class="suggestion-level">{{ label }}</span>
+            {{ text }}
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
+
+<!-- ─── Perfetto Trace ─── -->
+{% if job.trace_path %}
+<div class="report-section">
+    <h2 class="section-title">Trace 可视化</h2>
+    <div class="card">
+        <p class="text-muted mb-4" style="font-size:14px;">
+            在 Perfetto UI 中查看详细的算子时间线和设备活动。
+        </p>
+        <button class="btn btn-primary btn-lg" onclick="openInPerfetto('{{ job.id }}')">
+            &#9654; 在 Perfetto 中查看 Trace
+        </button>
+        <div id="trace-status"></div>
+    </div>
+</div>
+{% endif %}
+
+<!-- ─── Q&A Section ─── -->
+<div class="qa-section">
+    <h2 class="section-title">问题反馈</h2>
+    <p class="text-muted mb-4" style="font-size:14px;">
+        遇到性能问题？在此提交问题，支持粘贴 Perfetto 截图。
+    </p>
+    <textarea class="qa-textarea" id="qa-input" placeholder="描述你的问题...（支持粘贴截图 Ctrl+V）"></textarea>
+    <div class="qa-images" id="qa-images"></div>
+    <div class="qa-actions">
+        <button class="btn btn-primary" id="qa-submit" onclick="submitQuestion()">提交问题</button>
+        <label class="btn btn-secondary" for="qa-file-input">
+            &#128247; 添加截图
+        </label>
+        <input type="file" id="qa-file-input" accept="image/*" multiple style="display:none;">
+        <span class="qa-hint">Ctrl+V 粘贴截图 | 拖拽图片到文本框</span>
+    </div>
+</div>
+{% endif %}
+
+<!-- Report data for JS -->
+<script>
+    window.__REPORT__ = {{ report_json|safe }};
+    window.__JOB_ID__ = '{{ job.id }}';
+</script>
+{% endblock %}
+
+{% block scripts %}
+{% if report %}
+<script src="/static/js/report.js"></script>
+<script src="/static/js/perfetto.js"></script>
+<script src="/static/js/questions.js"></script>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,11 @@
+services:
+  web:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - MAX_CONCURRENCY=4
+      - ANALYSIS_TIMEOUT=300
+    restart: unless-stopped

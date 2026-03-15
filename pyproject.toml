@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ascend-profiling-web"
+version = "0.1.0"
+description = "昇腾 NPU Profiling 分析 Web 平台"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.104.0",
+    "uvicorn[standard]>=0.24.0",
+    "aiosqlite>=0.19.0",
+    "python-multipart>=0.0.6",
+    "jinja2>=3.1.2",
+    "rarfile>=4.1",
+]

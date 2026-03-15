@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+
+{% block title %}问题收集 - 昇腾 Profiling{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>问题收集</h1>
+    <p>用户提交的性能分析问题与截图</p>
+</div>
+
+{% if questions %}
+{% for q in questions %}
+<div class="question-card">
+    <div class="question-meta">
+        {% if q.filename %}
+        <strong>{{ q.filename }}</strong> &middot;
+        {% endif %}
+        {{ q.created_at }}
+        {% if q.context %}
+        &middot; <span class="text-mono">{{ q.context[:50] }}</span>
+        {% endif %}
+    </div>
+    <div class="question-text">{{ q.question }}</div>
+    {% if q.image_paths and q.image_paths|length > 0 %}
+    <div class="question-images">
+        {% for img in q.image_paths %}
+        <img src="{{ img }}" alt="截图" loading="lazy">
+        {% endfor %}
+    </div>
+    {% endif %}
+</div>
+{% endfor %}
+{% else %}
+<div class="empty-state">
+    <div class="empty-state-icon">&#128172;</div>
+    <p>暂无问题反馈</p>
+</div>
+{% endif %}
+{% endblock %}
