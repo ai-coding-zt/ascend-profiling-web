@@ -3,73 +3,224 @@
 {% block title %}昇腾 Profiling 分析平台{% endblock %}
 
 {% block content %}
-<div class="page-header">
-    <h1>昇腾 NPU Profiling 分析</h1>
-    <p>上传 profiling 数据归档，自动生成可视化分析报告</p>
-</div>
+<!-- Hero Upload Section -->
+<div class="hero-section">
+    <i data-lucide="activity" class="hero-icon"></i>
+    <h1 class="hero-title">昇腾 NPU Profiling 分析</h1>
+    <p class="hero-subtitle">上传 profiling 数据归档，AI 自动分析性能瓶颈并生成优化建议</p>
 
-<!-- Upload Dropzone -->
-<div class="dropzone" id="dropzone">
-    <div class="dropzone-icon">&#128230;</div>
-    <div class="dropzone-text">拖拽文件到此处或点击选择</div>
-    <div class="dropzone-hint">支持 .tar.gz / .zip / .rar 格式，最大 2GB</div>
-    <input type="file" id="file-input" accept=".tar.gz,.tgz,.tar,.zip,.rar,.tar.bz2">
-</div>
+    <div class="ai-greeting">
+        <i data-lucide="bot" style="width:20px;height:20px;"></i>
+        <span>上传 profiling 数据，我来帮你分析性能问题、定位瓶颈并给出优化方案。</span>
+    </div>
 
-<div id="upload-progress" style="display:none;">
-    <div class="card">
-        <div class="card-title">上传中...</div>
-        <div class="progress-bar"><div class="fill" id="progress-fill" style="width:0%"></div></div>
-        <div id="upload-status" class="text-muted" style="font-size:13px;"></div>
+    <!-- Upload Dropzone -->
+    <div class="dropzone" id="dropzone">
+        <div class="dropzone-icon"><i data-lucide="upload-cloud"></i></div>
+        <div class="dropzone-text">拖拽文件到此处或点击选择</div>
+        <div class="dropzone-hint">支持 .tar.gz / .zip / .rar 格式，最大 2GB</div>
+        <input type="file" id="file-input" accept=".tar.gz,.tgz,.tar,.zip,.rar,.tar.bz2">
+    </div>
+
+    <div id="upload-progress" style="display:none;">
+        <div class="card upload-card">
+            <div class="card-title">
+                <i data-lucide="loader" class="icon" style="animation:spin 1s linear infinite;width:18px;height:18px;"></i>
+                上传中...
+            </div>
+            <div class="progress-bar"><div class="fill" id="progress-fill" style="width:0%"></div></div>
+            <div id="upload-status" class="text-muted" style="font-size:13px;"></div>
+        </div>
     </div>
 </div>
 
-<!-- Jobs Table -->
-<div class="report-section">
-    <h2 class="section-title">分析任务</h2>
-    {% if jobs %}
-    <div class="table-scroll">
-        <table class="jobs-table" id="jobs-table">
-            <thead>
-                <tr>
-                    <th>文件名</th>
-                    <th>状态</th>
-                    <th>创建时间</th>
-                    <th>操作</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for job in jobs %}
-                <tr id="job-{{ job.id }}">
-                    <td>{{ job.filename }}</td>
-                    <td>
-                        <span class="badge badge-{{ job.status }}">{{ job.status }}</span>
-                        {% if job.error %}
-                        <span class="text-muted" style="font-size:12px;display:block;margin-top:4px;">{{ job.error[:80] }}</span>
-                        {% endif %}
-                    </td>
-                    <td class="text-muted" style="font-size:13px;">{{ job.created_at }}</td>
-                    <td>
-                        {% if job.status == 'done' %}
-                        <a href="/report/{{ job.id }}">查看报告</a>
-                        {% elif job.status in ('queued', 'unpacking', 'analyzing') %}
-                        <span class="text-muted">处理中...</span>
-                        {% endif %}
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
+<!-- Recent Analyses -->
+{% if jobs %}
+<div class="jobs-section">
+    <div class="jobs-section-title">
+        <i data-lucide="clock" style="width:16px;height:16px;"></i>
+        最近分析
     </div>
-    {% else %}
-    <div class="empty-state">
-        <div class="empty-state-icon">&#128202;</div>
-        <p>暂无分析任务，上传 profiling 数据开始分析</p>
+    <div class="job-cards">
+        {% for job in jobs %}
+        <div class="job-card-wrapper" id="job-wrapper-{{ job.id }}">
+            {% if job.status == 'done' %}
+            <a class="job-card" href="/report/{{ job.id }}">
+                <div class="job-card-header">
+                    <div class="job-card-name">{{ job.filename }}</div>
+                    <button class="job-delete-btn" onclick="event.preventDefault();event.stopPropagation();deleteJob('{{ job.id }}','{{ job.filename }}')" title="删除">
+                        <i data-lucide="trash-2" style="width:14px;height:14px;"></i>
+                    </button>
+                </div>
+                {% if job.summary %}
+                <div class="job-card-summary">
+                    <i data-lucide="sparkles" style="width:12px;height:12px;flex-shrink:0;"></i>
+                    <span>{{ job.summary }}</span>
+                </div>
+                {% endif %}
+                <div class="job-card-meta">
+                    <span class="badge badge-{{ job.status }}">{{ job.status }}</span>
+                    <span>{{ job.created_at }}</span>
+                </div>
+            </a>
+            {% elif job.status == 'failed' %}
+            <div class="job-card job-card-failed">
+                <div class="job-card-header">
+                    <div class="job-card-name">{{ job.filename }}</div>
+                    <button class="job-delete-btn" onclick="deleteJob('{{ job.id }}','{{ job.filename }}')" title="删除">
+                        <i data-lucide="trash-2" style="width:14px;height:14px;"></i>
+                    </button>
+                </div>
+                <div class="job-card-meta">
+                    <span class="badge badge-{{ job.status }}">{{ job.status }}</span>
+                    <span>{{ job.created_at }}</span>
+                    {% if job.error %}
+                    <button class="error-detail-btn" onclick="showErrorModal('{{ job.filename }}', {{ job.error|tojson }})" title="查看错误详情">
+                        <i data-lucide="alert-circle" style="width:12px;height:12px;"></i> 查看详情
+                    </button>
+                    {% endif %}
+                </div>
+            </div>
+            {% else %}
+            <div class="job-card" id="job-{{ job.id }}">
+                <div class="job-card-header">
+                    <div class="job-card-name">{{ job.filename }}</div>
+                </div>
+                <div class="job-card-meta">
+                    <span class="badge badge-{{ job.status }}">{{ job.status }}</span>
+                    <span>{{ job.created_at }}</span>
+                </div>
+            </div>
+            {% endif %}
+        </div>
+        {% endfor %}
     </div>
-    {% endif %}
 </div>
+{% endif %}
+
+<!-- Error Detail Modal -->
+<div class="error-modal-overlay" id="error-modal" style="display:none;" onclick="if(event.target===this)closeErrorModal()">
+    <div class="error-modal">
+        <div class="error-modal-header">
+            <div class="error-modal-title">
+                <i data-lucide="alert-triangle" style="width:18px;height:18px;color:var(--danger);"></i>
+                <span>分析失败</span>
+            </div>
+            <button class="error-modal-close" onclick="closeErrorModal()">
+                <i data-lucide="x" style="width:18px;height:18px;"></i>
+            </button>
+        </div>
+        <div class="error-modal-filename" id="error-modal-filename"></div>
+        <div class="error-modal-body">
+            <pre id="error-modal-content"></pre>
+        </div>
+        <div class="error-modal-actions">
+            <button class="btn btn-secondary" onclick="copyError()">
+                <i data-lucide="copy" style="width:14px;height:14px;"></i> 复制错误信息
+            </button>
+            <button class="btn btn-primary" onclick="closeErrorModal()">关闭</button>
+        </div>
+    </div>
+</div>
+
+<!-- Delete Confirm Modal -->
+<div class="error-modal-overlay" id="delete-modal" style="display:none;" onclick="if(event.target===this)closeDeleteModal()">
+    <div class="error-modal" style="max-width:420px;">
+        <div class="error-modal-header">
+            <div class="error-modal-title">
+                <i data-lucide="trash-2" style="width:18px;height:18px;color:var(--danger);"></i>
+                <span>确认删除</span>
+            </div>
+            <button class="error-modal-close" onclick="closeDeleteModal()">
+                <i data-lucide="x" style="width:18px;height:18px;"></i>
+            </button>
+        </div>
+        <div class="error-modal-body" style="padding:16px 20px;">
+            <p>确定要删除 <strong id="delete-modal-filename"></strong> 的分析数据吗？此操作不可恢复。</p>
+        </div>
+        <div class="error-modal-actions">
+            <button class="btn btn-secondary" onclick="closeDeleteModal()">取消</button>
+            <button class="btn btn-danger" id="delete-confirm-btn" onclick="confirmDelete()">
+                <i data-lucide="trash-2" style="width:14px;height:14px;"></i> 删除
+            </button>
+        </div>
+    </div>
+</div>
+
+<style>
+@keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+</style>
 {% endblock %}
 
 {% block scripts %}
 <script src="/static/js/upload.js"></script>
+<script>
+/* ─── Error Modal ─── */
+function showErrorModal(filename, error) {
+    document.getElementById('error-modal-filename').textContent = filename;
+    document.getElementById('error-modal-content').textContent = error;
+    document.getElementById('error-modal').style.display = 'flex';
+    if (window.lucide) lucide.createIcons();
+}
+
+function closeErrorModal() {
+    document.getElementById('error-modal').style.display = 'none';
+}
+
+function copyError() {
+    const text = document.getElementById('error-modal-content').textContent;
+    navigator.clipboard.writeText(text).then(() => {
+        const btn = document.querySelector('.error-modal-actions .btn-secondary');
+        const orig = btn.innerHTML;
+        btn.innerHTML = '<i data-lucide="check" style="width:14px;height:14px;"></i> 已复制';
+        if (window.lucide) lucide.createIcons();
+        setTimeout(() => { btn.innerHTML = orig; if (window.lucide) lucide.createIcons(); }, 2000);
+    });
+}
+
+/* ─── Delete Job ─── */
+let _deleteJobId = null;
+
+function deleteJob(jobId, filename) {
+    _deleteJobId = jobId;
+    document.getElementById('delete-modal-filename').textContent = filename;
+    document.getElementById('delete-modal').style.display = 'flex';
+    if (window.lucide) lucide.createIcons();
+}
+
+function closeDeleteModal() {
+    document.getElementById('delete-modal').style.display = 'none';
+    _deleteJobId = null;
+}
+
+function confirmDelete() {
+    if (!_deleteJobId) return;
+    const jobId = _deleteJobId;
+    const btn = document.getElementById('delete-confirm-btn');
+    btn.disabled = true;
+    btn.textContent = '删除中...';
+
+    fetch('/api/jobs/' + jobId, { method: 'DELETE' })
+        .then(resp => {
+            if (!resp.ok) throw new Error('删除失败');
+            // Remove card from DOM
+            const wrapper = document.getElementById('job-wrapper-' + jobId);
+            if (wrapper) {
+                wrapper.style.transition = 'opacity 0.3s, transform 0.3s';
+                wrapper.style.opacity = '0';
+                wrapper.style.transform = 'scale(0.95)';
+                setTimeout(() => wrapper.remove(), 300);
+            }
+            closeDeleteModal();
+        })
+        .catch(err => {
+            alert('删除失败: ' + err.message);
+            btn.disabled = false;
+            btn.textContent = '删除';
+        });
+}
+</script>
 {% endblock %}

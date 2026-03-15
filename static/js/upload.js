@@ -30,11 +30,18 @@
         if (fileInput.files.length) uploadFile(fileInput.files[0]);
     });
 
+    let _currentFilename = '';
+
     function uploadFile(file) {
+        _currentFilename = file.name;
         const formData = new FormData();
         formData.append('file', file);
 
         dropzone.style.display = 'none';
+        // Also hide the AI greeting if present
+        const greeting = document.querySelector('.ai-greeting');
+        if (greeting) greeting.style.display = 'none';
+
         progressDiv.style.display = 'block';
 
         const xhr = new XMLHttpRequest();
@@ -51,25 +58,55 @@
         xhr.onload = () => {
             if (xhr.status === 200) {
                 const data = JSON.parse(xhr.responseText);
+                progressFill.style.width = '100%';
                 uploadStatus.textContent = '上传完成，开始分析...';
                 pollJobStatus(data.id);
             } else {
+                let errorMsg = xhr.statusText;
                 try {
                     const err = JSON.parse(xhr.responseText);
-                    uploadStatus.textContent = '上传失败: ' + (err.detail || xhr.statusText);
-                } catch(e) {
-                    uploadStatus.textContent = '上传失败: ' + xhr.statusText;
-                }
-                uploadStatus.style.color = 'var(--danger)';
+                    errorMsg = err.detail || xhr.statusText;
+                } catch(e) {}
+                showUploadError('上传失败', errorMsg);
             }
         };
 
         xhr.onerror = () => {
-            uploadStatus.textContent = '网络错误';
-            uploadStatus.style.color = 'var(--danger)';
+            showUploadError('网络错误', '无法连接到服务器，请检查网络后重试。');
         };
 
         xhr.send(formData);
+    }
+
+    function showUploadError(title, detail) {
+        uploadStatus.innerHTML = '';
+        progressFill.style.width = '100%';
+        progressFill.style.background = 'var(--danger)';
+
+        uploadStatus.style.color = 'var(--danger)';
+        uploadStatus.textContent = title;
+
+        // Show error modal if available
+        if (typeof showErrorModal === 'function') {
+            showErrorModal(_currentFilename, detail);
+        }
+
+        // Show retry button
+        const retryBtn = document.createElement('button');
+        retryBtn.className = 'btn btn-secondary';
+        retryBtn.style.marginTop = '8px';
+        retryBtn.innerHTML = '<i data-lucide="refresh-cw" style="width:14px;height:14px;"></i> 重新上传';
+        retryBtn.onclick = () => {
+            progressDiv.style.display = 'none';
+            progressFill.style.width = '0%';
+            progressFill.style.background = '';
+            uploadStatus.style.color = '';
+            dropzone.style.display = '';
+            const greeting = document.querySelector('.ai-greeting');
+            if (greeting) greeting.style.display = '';
+        };
+        uploadStatus.after(retryBtn);
+        if (window.lucide) lucide.createIcons();
     }
 
     function pollJobStatus(jobId) {
@@ -77,15 +114,31 @@
 
         es.addEventListener('status', e => {
             const d = JSON.parse(e.data);
-            uploadStatus.textContent = '状态: ' + d.status;
+            const statusMap = {
+                'queued': '排队中...',
+                'unpacking': '解压中...',
+                'analyzing': '分析中...',
+            };
+            uploadStatus.textContent = statusMap[d.status] || ('状态: ' + d.status);
+
             if (d.status === 'done') {
                 es.close();
                 window.location.href = '/report/' + jobId;
             } else if (d.status === 'failed') {
                 es.close();
-                uploadStatus.textContent = '分析失败: ' + (d.error || '未知错误');
-                uploadStatus.style.color = 'var(--danger)';
+                const errorDetail = d.error || '未知错误';
+                showUploadError('分析失败', errorDetail);
             }
+        });
+
+        es.addEventListener('error_detail', e => {
+            // Additional error event with traceback
+            try {
+                const d = JSON.parse(e.data);
+                if (d.traceback && typeof showErrorModal === 'function') {
+                    showErrorModal(_currentFilename, d.error + '\n\n' + d.traceback);
+                }
+            } catch(ex) {}
         });
 
         es.addEventListener('done', () => {

@@ -6,14 +6,95 @@
 <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
 {% endblock %}
 
+{% block main_class %}report-layout{% endblock %}
+
 {% block content %}
-<div class="page-header">
-    <h1>Profiling 分析报告</h1>
-    <p>{{ job.filename }} &middot; {{ job.created_at }}</p>
+<!-- Mobile Tab Bar -->
+<div class="mobile-tab-bar" id="mobile-tab-bar">
+    <button class="mobile-tab active" data-panel="chat" onclick="switchPanel('chat')">
+        <i data-lucide="bot" style="width:16px;height:16px;"></i> AI 助手
+    </button>
+    <button class="mobile-tab" data-panel="dashboard" onclick="switchPanel('dashboard')">
+        <i data-lucide="layout-dashboard" style="width:16px;height:16px;"></i> 仪表盘
+    </button>
 </div>
 
+<!-- ─── Left: AI Chat Panel ─── -->
+<div class="chat-panel active-panel" id="chat-panel">
+    <div class="chat-header">
+        <div class="chat-header-title">
+            <i data-lucide="bot" style="width:18px;height:18px;"></i>
+            Profiling 助手
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;">
+            <span class="text-muted" style="font-size:12px;">{{ job.filename }}</span>
+            <button class="clear-chat-btn" onclick="clearChatHistory()" title="清除历史对话">
+                <i data-lucide="trash-2" style="width:14px;height:14px;"></i>
+            </button>
+        </div>
+    </div>
+    <div class="chat-messages" id="chat-messages">
+        <div class="chat-msg chat-msg-bot">
+            <div class="chat-msg-content">
+                你好！我可以帮你分析这份 profiling 数据中的性能问题。你可以：
+                <ul>
+                    <li>询问报告中的任何指标</li>
+                    <li>粘贴 Perfetto 截图提问</li>
+                    <li>获取优化建议</li>
+                </ul>
+                点击右侧仪表盘各项标题的 <strong>「问 AI」</strong> 按钮可快速提问。
+            </div>
+        </div>
+    </div>
+    <div class="chat-images" id="chat-images"></div>
+    <div class="chat-input-area">
+        <textarea class="chat-input" id="chat-input" placeholder="输入问题...（Ctrl+V 粘贴截图）" rows="2"></textarea>
+        <div class="chat-input-actions">
+            <label class="chat-attach-btn" for="chat-file-input" title="添加截图">
+                <i data-lucide="image-plus" style="width:20px;height:20px;"></i>
+            </label>
+            <input type="file" id="chat-file-input" accept="image/*" multiple style="display:none;">
+            <button class="chat-send-btn" id="chat-send" onclick="sendChatMessage()">
+                <i data-lucide="send" style="width:18px;height:18px;"></i>
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- Resizable Divider -->
+<div class="resize-divider" id="resize-divider"></div>
+
+<!-- ─── Right: Dashboard Panel ─── -->
+<div class="dashboard-panel" id="dashboard-panel">
+
+{% if report %}
+<!-- Mini TOC -->
+<div class="dashboard-toc" id="dashboard-toc">
+    <a class="toc-item" href="#sec-overview" data-section="sec-overview">概览</a>
+    {% if report.step_trace and report.step_trace|length > 0 %}
+    <a class="toc-item" href="#sec-step-trace" data-section="sec-step-trace">迭代分解</a>
+    {% endif %}
+    {% if report.step_trace and report.step_trace|length > 0 and report.step_trace[0].overlap_analysis %}
+    <a class="toc-item" href="#sec-overlap" data-section="sec-overlap">重叠分析</a>
+    {% endif %}
+    {% if report.op_analysis and report.op_analysis|length > 0 %}
+    <a class="toc-item" href="#sec-op-analysis" data-section="sec-op-analysis">算子分析</a>
+    <a class="toc-item" href="#sec-top-ops" data-section="sec-top-ops">慢算子</a>
+    {% endif %}
+    {% if report.communication and report.communication|length > 0 %}
+    <a class="toc-item" href="#sec-comm" data-section="sec-comm">通信分析</a>
+    {% endif %}
+    {% if report.multi_rank and report.multi_rank.rank_count > 1 %}
+    <a class="toc-item" href="#sec-multi-rank" data-section="sec-multi-rank">多卡分析</a>
+    {% endif %}
+    <a class="toc-item" href="#sec-suggestions" data-section="sec-suggestions">优化建议</a>
+</div>
+{% endif %}
+
+<div class="dashboard-content" id="dashboard-content">
+
 {% if job.status != 'done' %}
-<div class="card">
+<div class="card" style="margin-top:24px;">
     <div class="card-title">
         <span class="badge badge-{{ job.status }}">{{ job.status }}</span>
         {% if job.status == 'failed' %}
@@ -40,9 +121,21 @@
 {% endif %}
 
 {% if report %}
-<!-- ─── Basic Info ─── -->
-<div class="report-section">
-    <h2 class="section-title">概览</h2>
+
+<div class="page-header" style="padding-top:24px;">
+    <h1>Profiling 分析报告</h1>
+    <p>{{ job.filename }} &middot; {{ job.created_at }}</p>
+</div>
+
+{# ═══════════════════════════════════════════════════════════════════════════ #}
+{# 1. 概览                                                                   #}
+{# ═══════════════════════════════════════════════════════════════════════════ #}
+<div class="report-section" id="sec-overview">
+    <h2 class="section-title">
+        <i data-lucide="layout-dashboard"></i> 概览
+        <button class="ask-ai-btn" onclick="askAiAboutSection('概览')"><i data-lucide="bot"></i> 问 AI</button>
+    </h2>
+    <div class="ai-section-insight" data-section="overview"></div>
     <div class="info-grid">
         {% if report.op_analysis and report.op_analysis|length > 0 %}
         <div class="info-item">
@@ -53,6 +146,17 @@
             <div class="info-label">算子总耗时</div>
             <div class="info-value">{{ "%.2f"|format(report.op_analysis[0].total_time_us / 1000) }} ms</div>
         </div>
+        {% if report.op_analysis[0].dtype_stats %}
+        <div class="info-item">
+            <div class="info-label">主要数据类型</div>
+            <div class="info-value small">
+                {% set ds = report.op_analysis[0].dtype_stats %}
+                {% for dt, info in ds.items() %}{% if loop.index <= 3 %}
+                <span class="dtype-badge dtype-{{ dt|lower|replace('dt_', '')|replace('float', 'fp') }}">{{ dt|replace('DT_', '') }} {{ "%.0f"|format(info.pct_time) }}%</span>
+                {% endif %}{% endfor %}
+            </div>
+        </div>
+        {% endif %}
         {% endif %}
         {% if report.step_trace and report.step_trace|length > 0 %}
         <div class="info-item">
@@ -70,14 +174,26 @@
             <div class="info-value">{{ report.communication[0].total_communications }}</div>
         </div>
         {% endif %}
+        {% if report.multi_rank and report.multi_rank.rank_count > 1 %}
+        <div class="info-item">
+            <div class="info-label">卡数</div>
+            <div class="info-value">{{ report.multi_rank.rank_count }}</div>
+        </div>
+        {% endif %}
     </div>
 </div>
 
-<!-- ─── Step Trace Breakdown ─── -->
+{# ═══════════════════════════════════════════════════════════════════════════ #}
+{# 2. 迭代时间分解                                                           #}
+{# ═══════════════════════════════════════════════════════════════════════════ #}
 {% if report.step_trace and report.step_trace|length > 0 %}
 {% set st = report.step_trace[0] %}
-<div class="report-section">
-    <h2 class="section-title">迭代时间分解</h2>
+<div class="report-section" id="sec-step-trace">
+    <h2 class="section-title">
+        <i data-lucide="timer"></i> 迭代时间分解
+        <button class="ask-ai-btn" onclick="askAiAboutSection('迭代时间分解')"><i data-lucide="bot"></i> 问 AI</button>
+    </h2>
+    <div class="ai-section-insight" data-section="step-trace"></div>
     <p class="text-muted mb-4" style="font-size:14px;">
         共 {{ st.step_count }} 个 step，平均迭代: {{ "%.2f"|format(st.mean_step_time_us / 1000) }} ms
     </p>
@@ -94,26 +210,160 @@
 </div>
 {% endif %}
 
-<!-- ─── Cube / Vector Distribution ─── -->
+{# ═══════════════════════════════════════════════════════════════════════════ #}
+{# 3. 计算-通信重叠分析                                                      #}
+{# ═══════════════════════════════════════════════════════════════════════════ #}
+{% if report.step_trace and report.step_trace|length > 0 and report.step_trace[0].overlap_analysis %}
+{% set oa = report.step_trace[0].overlap_analysis %}
+<div class="report-section" id="sec-overlap">
+    <h2 class="section-title">
+        <i data-lucide="layers"></i> 计算-通信重叠分析
+        <button class="ask-ai-btn" onclick="askAiAboutSection('计算-通信重叠分析')"><i data-lucide="bot"></i> 问 AI</button>
+    </h2>
+    <div class="ai-section-insight" data-section="overlap"></div>
+    <div class="info-grid" style="margin-bottom:16px;">
+        <div class="info-item">
+            <div class="info-label">重叠率</div>
+            <div class="info-value">
+                <span class="overlap-indicator overlap-{{ 'good' if oa.overlap_ratio >= 80 else ('warn' if oa.overlap_ratio >= 50 else 'bad') }}">
+                    {{ "%.1f"|format(oa.overlap_ratio) }}%
+                </span>
+            </div>
+        </div>
+        <div class="info-item">
+            <div class="info-label">目标</div>
+            <div class="info-value">&ge; {{ oa.target }}%</div>
+        </div>
+        <div class="info-item">
+            <div class="info-label">已重叠通信</div>
+            <div class="info-value small">{{ "%.1f"|format(oa.overlapped_us / 1000) }} ms</div>
+        </div>
+        <div class="info-item">
+            <div class="info-label">未重叠通信</div>
+            <div class="info-value small">{{ "%.1f"|format(oa.not_overlapped_us / 1000) }} ms</div>
+        </div>
+    </div>
+    {% if oa.per_step|length > 1 %}
+    <div class="card">
+        <div class="card-title"><i data-lucide="trending-up" class="icon"></i> 每步重叠率</div>
+        <div class="chart-container" id="chart-overlap"></div>
+    </div>
+    {% endif %}
+</div>
+{% endif %}
+
+{# ═══════════════════════════════════════════════════════════════════════════ #}
+{# 4. 算子分析（核心分布 + 数据类型 + 类型分解 合并）                          #}
+{# ═══════════════════════════════════════════════════════════════════════════ #}
 {% if report.op_analysis and report.op_analysis|length > 0 %}
 {% set op = report.op_analysis[0] %}
-<div class="report-section">
-    <h2 class="section-title">核心类型分布</h2>
+<div class="report-section" id="sec-op-analysis">
+    <h2 class="section-title">
+        <i data-lucide="pie-chart"></i> 算子分析
+        <button class="ask-ai-btn" onclick="askAiAboutSection('算子分析')"><i data-lucide="bot"></i> 问 AI</button>
+    </h2>
+    <div class="ai-section-insight" data-section="op-analysis"></div>
+
+    {# ── 4a. 核心类型分布 ── #}
+    <h3 class="subsection-title"><i data-lucide="pie-chart" class="icon"></i> 核心类型分布</h3>
     <div class="chart-row">
         <div class="card">
-            <div class="card-title"><span class="icon">&#127856;</span> 耗时占比</div>
+            <div class="card-title"><i data-lucide="pie-chart" class="icon"></i> 耗时占比</div>
             <div class="chart-container" id="chart-pie"></div>
         </div>
         <div class="card">
-            <div class="card-title"><span class="icon">&#128202;</span> 按 OP Type 分布</div>
+            <div class="card-title"><i data-lucide="bar-chart-2" class="icon"></i> 按 OP Type 分布</div>
             <div class="chart-container" id="chart-type-bar"></div>
         </div>
     </div>
+
+    {# ── 4b. 数据类型分析 ── #}
+    {% if op.dtype_analysis %}
+    <h3 class="subsection-title" style="margin-top:24px;"><i data-lucide="hash" class="icon"></i> 数据类型分析</h3>
+    <div class="chart-row">
+        <div class="card">
+            <div class="card-title"><i data-lucide="hash" class="icon"></i> 按算子数量</div>
+            <div class="chart-container" id="chart-dtype-count"></div>
+        </div>
+        <div class="card">
+            <div class="card-title"><i data-lucide="clock" class="icon"></i> 按耗时占比</div>
+            <div class="chart-container" id="chart-dtype-time"></div>
+        </div>
+    </div>
+    {% if op.dtype_analysis.type_conversions|length > 0 %}
+    <div class="card mt-4">
+        <div class="card-title"><i data-lucide="repeat" class="icon"></i> 类型转换算子</div>
+        <div class="table-scroll">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>算子类型</th>
+                        <th>输入类型</th>
+                        <th>输出类型</th>
+                        <th class="num">次数</th>
+                        <th class="num">耗时 (us)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for tc in op.dtype_analysis.type_conversions %}
+                    <tr>
+                        <td>{{ tc.op_type }}</td>
+                        <td><span class="dtype-badge">{{ tc.from }}</span></td>
+                        <td><span class="dtype-badge">{{ tc.to }}</span></td>
+                        <td class="num">{{ tc.count }}</td>
+                        <td class="num">{{ "%.1f"|format(tc.time_us) }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% endif %}
+    {% endif %}
+
+    {# ── 4c. 算子类型详细分解 ── #}
+    {% if op.type_breakdown|length > 0 %}
+    <h3 class="subsection-title" style="margin-top:24px;"><i data-lucide="bar-chart-2" class="icon"></i> 算子类型详细分解</h3>
+    <div class="card">
+        <div class="card-title"><i data-lucide="bar-chart-2" class="icon"></i> Top-{{ op.type_breakdown|length }} OP Type 耗时分布</div>
+        <div class="chart-container" id="chart-type-breakdown" style="height:450px;"></div>
+    </div>
+    <div class="table-scroll mt-4">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>OP Type</th>
+                    <th class="num">次数</th>
+                    <th class="num">总耗时 (us)</th>
+                    <th class="num">占比</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for tb in op.type_breakdown %}
+                <tr>
+                    <td class="num">{{ loop.index }}</td>
+                    <td>{{ tb.type }}</td>
+                    <td class="num">{{ tb.count }}</td>
+                    <td class="num">{{ "%.0f"|format(tb.time_us) }}</td>
+                    <td class="num">{{ "%.1f"|format(tb.pct) }}%</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
 </div>
 
-<!-- ─── Top-N Slow Operators (grouped by Type+Shape) ─── -->
-<div class="report-section">
-    <h2 class="section-title">Top 慢算子组</h2>
+{# ═══════════════════════════════════════════════════════════════════════════ #}
+{# 7. Top 慢算子组                                                           #}
+{# ═══════════════════════════════════════════════════════════════════════════ #}
+<div class="report-section" id="sec-top-ops">
+    <h2 class="section-title">
+        <i data-lucide="zap"></i> Top 慢算子组
+        <button class="ask-ai-btn" onclick="askAiAboutSection('Top 慢算子组')"><i data-lucide="bot"></i> 问 AI</button>
+    </h2>
+    <div class="ai-section-insight" data-section="top-ops"></div>
     <p class="text-muted mb-4" style="font-size:14px;">
         按 (OP Type, Input Shapes) 聚合相同算子，按总耗时降序排列。CV > 5% 表示同组算子存在性能抖动。
     </p>
@@ -131,11 +381,28 @@
                     <th class="num">累计</th>
                     <th class="num">CV</th>
                     <th>Bound</th>
+                    {% if op.pipeline_utilization and op.pipeline_utilization.top_ops|length > 0 %}
+                    <th class="num">Mac%</th>
+                    <th class="num">Vec%</th>
+                    <th class="num">MTE2%</th>
+                    {% endif %}
+                    <th>Dtype</th>
+                    <th>Format</th>
                     <th>Shapes</th>
                 </tr>
             </thead>
             <tbody>
                 {% for o in op.top_ops %}
+                {% set pipe_match = namespace(mac='', vec='', mte2='') %}
+                {% if op.pipeline_utilization and op.pipeline_utilization.top_ops|length > 0 %}
+                    {% for po in op.pipeline_utilization.top_ops %}
+                        {% if po.type == o.type %}
+                            {% set pipe_match.mac = "%.0f"|format((po.mac_ratio or 0) * 100) %}
+                            {% set pipe_match.vec = "%.0f"|format((po.vec_ratio or 0) * 100) %}
+                            {% set pipe_match.mte2 = "%.0f"|format((po.mte2_ratio or 0) * 100) %}
+                        {% endif %}
+                    {% endfor %}
+                {% endif %}
                 <tr class="{{ 'jitter-warn' if o.cv > 0.05 else '' }}">
                     <td class="num">{{ loop.index }}</td>
                     <td>{{ o.type }}</td>
@@ -147,6 +414,17 @@
                     <td class="num">{{ "%.1f"|format(o.cumulative_pct) }}%</td>
                     <td class="num" style="{{ 'color:var(--danger);font-weight:600' if o.cv > 0.05 else '' }}">{{ "%.2f"|format(o.cv * 100) }}%</td>
                     <td>{{ o.bound }}</td>
+                    {% if op.pipeline_utilization and op.pipeline_utilization.top_ops|length > 0 %}
+                    {% if pipe_match.mac %}
+                    <td class="num" style="{{ 'color:var(--danger)' if pipe_match.mac|int < 50 and o.category == 'cube' else '' }}">{{ pipe_match.mac }}</td>
+                    {% else %}<td class="num">-</td>{% endif %}
+                    {% if pipe_match.vec %}
+                    <td class="num" style="{{ 'color:var(--danger)' if pipe_match.vec|int < 50 and o.category == 'vector' else '' }}">{{ pipe_match.vec }}</td>
+                    {% else %}<td class="num">-</td>{% endif %}
+                    <td class="num">{{ pipe_match.mte2 or '-' }}</td>
+                    {% endif %}
+                    <td>{% if o.dtype %}<span class="dtype-badge">{{ o.dtype|replace('DT_', '') }}</span>{% endif %}</td>
+                    <td class="text-mono" style="font-size:11px;">{{ o.format }}</td>
                     <td class="name-cell text-mono" title="{{ o.shapes }}">{{ o.shapes[:35] }}</td>
                 </tr>
                 {% endfor %}
@@ -155,10 +433,40 @@
     </div>
 </div>
 
-<!-- ─── Jitter Analysis ─── -->
+{# ═══════════════════════════════════════════════════════════════════════════ #}
+{# 8. 算子流水线利用率                                                        #}
+{# ═══════════════════════════════════════════════════════════════════════════ #}
+{% if op.pipeline_utilization and op.pipeline_utilization.top_ops|length > 0 %}
+<div class="report-section" id="sec-pipeline">
+    <h2 class="section-title">
+        <i data-lucide="settings"></i> 算子流水线利用率
+        <button class="ask-ai-btn" onclick="askAiAboutSection('算子流水线利用率')"><i data-lucide="bot"></i> 问 AI</button>
+    </h2>
+    <div class="ai-section-insight" data-section="pipeline"></div>
+    <p class="text-muted mb-4" style="font-size:14px;">
+        Top 慢算子组的各流水线单元利用率（Mac=矩阵计算, Vec=向量计算, MTE2=数据搬运）。
+    </p>
+    <div class="card">
+        <div class="card-title"><i data-lucide="settings" class="icon"></i> 流水线利用率对比</div>
+        <div class="chart-container" id="chart-pipeline" style="height:400px;"></div>
+    </div>
+    <div class="card" style="margin-top:16px;">
+        <div class="card-title"><i data-lucide="table" class="icon"></i> 流水线利用率详情（含 Dtype / Shape）</div>
+        <div class="table-scroll" id="pipeline-detail-table"></div>
+    </div>
+</div>
+{% endif %}
+
+{# ═══════════════════════════════════════════════════════════════════════════ #}
+{# 9. 同 Shape 算子抖动分析                                                   #}
+{# ═══════════════════════════════════════════════════════════════════════════ #}
 {% if op.jitter and op.jitter|length > 0 %}
-<div class="report-section">
-    <h2 class="section-title">同 Shape 算子抖动分析</h2>
+<div class="report-section" id="sec-jitter">
+    <h2 class="section-title">
+        <i data-lucide="activity"></i> 同 Shape 算子抖动分析
+        <button class="ask-ai-btn" onclick="askAiAboutSection('同 Shape 算子抖动分析')"><i data-lucide="bot"></i> 问 AI</button>
+    </h2>
+    <div class="ai-section-insight" data-section="jitter"></div>
     <p class="text-muted mb-4" style="font-size:14px;">
         CV (变异系数) > 5% 标记为抖动警告。Cube/Mix 算子抖动可能由 NPU 降频引起。
     </p>
@@ -168,6 +476,7 @@
                 <tr>
                     <th>类型</th>
                     <th>核心</th>
+                    <th>Dtype</th>
                     <th class="num">次数</th>
                     <th class="num">均值 (us)</th>
                     <th class="num">标准差</th>
@@ -183,6 +492,7 @@
                 <tr class="{{ 'jitter-warn' if j.cv > 0.05 else '' }}">
                     <td>{{ j.type }}</td>
                     <td>{{ j.category }}</td>
+                    <td>{% if j.dtype %}<span class="dtype-badge">{{ j.dtype|replace('DT_', '') }}</span>{% endif %}</td>
                     <td class="num">{{ j.count }}</td>
                     <td class="num">{{ "%.1f"|format(j.mean_us) }}</td>
                     <td class="num">{{ "%.1f"|format(j.std_us) }}</td>
@@ -198,15 +508,24 @@
     </div>
 </div>
 {% endif %}
-{% endif %}
+{% endif %}{# end op_analysis #}
 
-<!-- ─── Communication Analysis ─── -->
+{# ═══════════════════════════════════════════════════════════════════════════ #}
+{# 10. 通信分析（通信统计 + Shape 分组 合并）                                  #}
+{# ═══════════════════════════════════════════════════════════════════════════ #}
 {% if report.communication and report.communication|length > 0 %}
 {% set cm = report.communication[0] %}
-<div class="report-section">
-    <h2 class="section-title">通信分析</h2>
+<div class="report-section" id="sec-comm">
+    <h2 class="section-title">
+        <i data-lucide="radio"></i> 通信分析
+        <button class="ask-ai-btn" onclick="askAiAboutSection('通信分析')"><i data-lucide="bot"></i> 问 AI</button>
+    </h2>
+    <div class="ai-section-insight" data-section="comm"></div>
+
+    {# ── 10a. 通信耗时与带宽 ── #}
+    <h3 class="subsection-title"><i data-lucide="radio" class="icon"></i> 通信耗时与带宽</h3>
     <div class="card">
-        <div class="card-title"><span class="icon">&#128225;</span> 通信耗时与带宽</div>
+        <div class="card-title"><i data-lucide="radio" class="icon"></i> 通信耗时对比</div>
         <div class="chart-container" id="chart-comm"></div>
     </div>
     <div class="table-scroll mt-4">
@@ -235,10 +554,137 @@
             </tbody>
         </table>
     </div>
+
+    {# ── 10b. 通信算子 Shape 分组 ── #}
+    {% if report.comm_shape_analysis and report.comm_shape_analysis|length > 0 %}
+    {% set cs = report.comm_shape_analysis[0] %}
+    <h3 class="subsection-title" style="margin-top:24px;"><i data-lucide="git-branch" class="icon"></i> 通信算子 Shape 分组</h3>
+    <p class="text-muted mb-4" style="font-size:14px;">
+        按 (Name, Input Shapes) 分组通信算子。CV > 5% 标黄，可能存在网络抖动。
+    </p>
+    <div class="table-scroll">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Shapes</th>
+                    <th class="num">次数</th>
+                    <th class="num">均值 (us)</th>
+                    <th class="num">标准差</th>
+                    <th class="num">CV</th>
+                    <th class="num">最小</th>
+                    <th class="num">最大</th>
+                    <th class="num">占比</th>
+                    <th class="num">数据量 (MB)</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for g in cs.shape_groups %}
+                <tr class="{{ 'jitter-warn' if g.cv > 0.05 else '' }}">
+                    <td>{{ g.name[:25] }}</td>
+                    <td class="name-cell text-mono" title="{{ g.shapes }}">{{ g.shapes[:25] }}</td>
+                    <td class="num">{{ g.count }}</td>
+                    <td class="num">{{ "%.1f"|format(g.mean_us) }}</td>
+                    <td class="num">{{ "%.1f"|format(g.std_us) }}</td>
+                    <td class="num" style="{{ 'color:var(--danger);font-weight:600' if g.cv > 0.05 else '' }}">{{ "%.2f"|format(g.cv * 100) }}%</td>
+                    <td class="num">{{ "%.1f"|format(g.min_us) }}</td>
+                    <td class="num">{{ "%.1f"|format(g.max_us) }}</td>
+                    <td class="num">{{ "%.1f"|format(g.pct) }}%</td>
+                    <td class="num">{% if g.tensor_size_mb > 0 %}{{ "%.1f"|format(g.tensor_size_mb) }}{% else %}-{% endif %}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
 </div>
 {% endif %}
 
-<!-- ─── Optimization Suggestions ─── -->
+{# ═══════════════════════════════════════════════════════════════════════════ #}
+{# 12. 多卡算子对齐与快慢卡分析                                               #}
+{# ═══════════════════════════════════════════════════════════════════════════ #}
+{% if report.multi_rank and report.multi_rank.rank_count > 1 %}
+{% set mr = report.multi_rank %}
+<div class="report-section" id="sec-multi-rank">
+    <h2 class="section-title">
+        <i data-lucide="server"></i> 多卡算子对齐与快慢卡分析
+        <button class="ask-ai-btn" onclick="askAiAboutSection('多卡算子对齐与快慢卡分析')"><i data-lucide="bot"></i> 问 AI</button>
+    </h2>
+    <div class="ai-section-insight" data-section="multi-rank"></div>
+    <div class="info-grid" style="margin-bottom:16px;">
+        <div class="info-item">
+            <div class="info-label">卡数</div>
+            <div class="info-value">{{ mr.rank_count }}</div>
+        </div>
+        <div class="info-item">
+            <div class="info-label">平均迭代时间</div>
+            <div class="info-value small">{{ "%.1f"|format(mr.mean_total_us / 1000) }} ms</div>
+        </div>
+        <div class="info-item">
+            <div class="info-label">最大偏差</div>
+            <div class="info-value">
+                <span class="overlap-indicator overlap-{{ 'good' if mr.max_deviation_pct < 3 else ('warn' if mr.max_deviation_pct < 10 else 'bad') }}">
+                    {{ "%.2f"|format(mr.max_deviation_pct) }}%
+                </span>
+            </div>
+        </div>
+        {% if mr.slow_ranks|length > 0 %}
+        <div class="info-item">
+            <div class="info-label">慢卡</div>
+            <div class="info-value small" style="color:var(--danger);">Device {{ mr.slow_ranks|join(', ') }}</div>
+        </div>
+        {% endif %}
+    </div>
+    <div class="card">
+        <div class="card-title"><i data-lucide="server" class="icon"></i> 各卡迭代时间分解</div>
+        <div class="chart-container" id="chart-multi-rank" style="height:400px;"></div>
+    </div>
+</div>
+{% endif %}
+
+{# ═══════════════════════════════════════════════════════════════════════════ #}
+{# 13. 算子下发速率分析                                                       #}
+{# ═══════════════════════════════════════════════════════════════════════════ #}
+{% if report.op_analysis and report.op_analysis|length > 0 and report.op_analysis[0].dispatch_rate %}
+{% set dr = report.op_analysis[0].dispatch_rate %}
+<div class="report-section" id="sec-dispatch">
+    <h2 class="section-title">
+        <i data-lucide="gauge"></i> 算子下发速率分析
+        <button class="ask-ai-btn" onclick="askAiAboutSection('算子下发速率分析')"><i data-lucide="bot"></i> 问 AI</button>
+    </h2>
+    <div class="ai-section-insight" data-section="dispatch"></div>
+    <div class="info-grid" style="margin-bottom:16px;">
+        <div class="info-item">
+            <div class="info-label">总算子数</div>
+            <div class="info-value">{{ dr.total_ops }}</div>
+        </div>
+        <div class="info-item">
+            <div class="info-label">平均下发速率</div>
+            <div class="info-value small">{{ "%.0f"|format(dr.avg_rate_ops_per_s) }} ops/s</div>
+        </div>
+        <div class="info-item">
+            <div class="info-label">瓶颈窗口</div>
+            <div class="info-value">{{ dr.bottleneck_windows|length }}</div>
+        </div>
+    </div>
+    {% if dr.windows|length > 1 %}
+    <div class="chart-row">
+        <div class="card">
+            <div class="card-title"><i data-lucide="trending-up" class="icon"></i> 下发速率趋势</div>
+            <div class="chart-container" id="chart-dispatch-rate"></div>
+        </div>
+        <div class="card">
+            <div class="card-title"><i data-lucide="bar-chart-2" class="icon"></i> Wait Time 分布</div>
+            <div class="chart-container" id="chart-wait-dist"></div>
+        </div>
+    </div>
+    {% endif %}
+</div>
+{% endif %}
+
+{# ═══════════════════════════════════════════════════════════════════════════ #}
+{# 14. 优化建议                                                              #}
+{# ═══════════════════════════════════════════════════════════════════════════ #}
 {% set all_suggestions = [] %}
 {% if report.op_analysis %}
     {% for op in report.op_analysis %}
@@ -256,8 +702,12 @@
 {% endif %}
 
 {% if all_suggestions|length > 0 %}
-<div class="report-section">
-    <h2 class="section-title">优化建议</h2>
+<div class="report-section" id="sec-suggestions">
+    <h2 class="section-title">
+        <i data-lucide="lightbulb"></i> 优化建议
+        <button class="ask-ai-btn" onclick="askAiAboutSection('优化建议')"><i data-lucide="bot"></i> 问 AI</button>
+    </h2>
+    <div class="ai-section-insight" data-section="suggestions"></div>
     <div class="suggestions">
         {% for s in all_suggestions %}
         {% set level = 'high' if s.startswith('[HIGH]') else ('medium' if s.startswith('[MEDIUM]') else 'low') %}
@@ -272,16 +722,20 @@
 </div>
 {% endif %}
 
-<!-- ─── Perfetto Trace ─── -->
+{# ═══════════════════════════════════════════════════════════════════════════ #}
+{# 15. Trace 可视化                                                          #}
+{# ═══════════════════════════════════════════════════════════════════════════ #}
 {% if job.trace_path %}
-<div class="report-section">
-    <h2 class="section-title">Trace 可视化</h2>
+<div class="report-section" id="sec-trace">
+    <h2 class="section-title">
+        <i data-lucide="scan-line"></i> Trace 可视化
+    </h2>
     <div class="card">
         <p class="text-muted mb-4" style="font-size:14px;">
             查看详细的算子时间线和设备活动。
         </p>
         <button class="btn btn-primary btn-lg" id="trace-open-btn" onclick="loadPerfettoTrace('{{ job.id }}')">
-            &#9654; 加载 Trace 视图
+            <i data-lucide="play" style="width:16px;height:16px;"></i> 加载 Trace 视图
         </button>
         <div id="trace-status"></div>
     </div>
@@ -292,45 +746,7 @@
 {% endif %}
 
 {% endif %}
-
-<!-- ─── Floating Chat Widget ─── -->
-<div class="chat-toggle" id="chat-toggle" onclick="toggleChat()">
-    <span class="chat-toggle-icon">&#128172;</span>
-    <span class="chat-toggle-label">问一问</span>
 </div>
-
-<div class="chat-panel" id="chat-panel">
-    <div class="chat-header">
-        <div class="chat-header-title">
-            <span>&#129302;</span> Profiling 助手
-        </div>
-        <button class="chat-close" onclick="toggleChat()">&times;</button>
-    </div>
-    <div class="chat-messages" id="chat-messages">
-        <div class="chat-msg chat-msg-bot">
-            <div class="chat-msg-content">
-                你好！我可以帮你分析 profiling 数据中的性能问题。你可以：
-                <ul style="margin:8px 0 0;padding-left:18px;">
-                    <li>询问报告中的任何指标</li>
-                    <li>粘贴 Perfetto 截图提问</li>
-                    <li>获取优化建议</li>
-                </ul>
-            </div>
-        </div>
-    </div>
-    <div class="chat-images" id="chat-images"></div>
-    <div class="chat-input-area">
-        <textarea class="chat-input" id="chat-input" placeholder="输入问题...（Ctrl+V 粘贴截图）" rows="2"></textarea>
-        <div class="chat-input-actions">
-            <label class="chat-attach-btn" for="chat-file-input" title="添加截图">
-                &#128247;
-            </label>
-            <input type="file" id="chat-file-input" accept="image/*" multiple style="display:none;">
-            <button class="chat-send-btn" id="chat-send" onclick="sendChatMessage()">
-                &#10148;
-            </button>
-        </div>
-    </div>
 </div>
 
 <!-- Report data for JS -->

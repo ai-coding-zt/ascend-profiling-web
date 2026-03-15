@@ -9,6 +9,7 @@ class JobOut(BaseModel):
     status: str
     error: str | None = None
     trace_path: str | None = None
+    summary: str | None = None
     created_at: str
     updated_at: str
 
@@ -27,3 +28,10 @@ class QuestionOut(BaseModel):
     context: str | None = None
     image_paths: list[str] = []
     created_at: str
+
+
+class ChatIn(BaseModel):
+    job_id: str | None = None
+    message: str
+    context: str | None = None
+    image_paths: list[str] = []

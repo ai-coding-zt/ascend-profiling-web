@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     status TEXT NOT NULL DEFAULT 'queued',
     error TEXT,
     trace_path TEXT,
+    summary TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -31,6 +32,11 @@ async def init_db():
     async with aiosqlite.connect(str(DB_PATH)) as db:
         await db.execute("PRAGMA journal_mode=WAL")
         await db.executescript(SCHEMA)
+        # Migrate: add summary column if missing
+        cursor = await db.execute("PRAGMA table_info(jobs)")
+        cols = {r[1] for r in await cursor.fetchall()}
+        if "summary" not in cols:
+            await db.execute("ALTER TABLE jobs ADD COLUMN summary TEXT")
         await db.commit()
 
 

@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from app.database import init_db
-from app.routers import jobs, pages, questions, report, trace, upload
+from app.routers import jobs, pages, perfetto_proxy, questions, report, trace, upload
 from app.services.cleanup import cleanup_loop
 
 
@@ -35,6 +35,7 @@ app.include_router(jobs.router)
 app.include_router(report.router)
 app.include_router(trace.router)
 app.include_router(questions.router)
+app.include_router(perfetto_proxy.router)
 
 # 页面路由
 app.include_router(pages.router)

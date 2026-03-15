@@ -8,23 +8,35 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/css/style.css">
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="/static/js/theme.js"></script>
     {% block head %}{% endblock %}
 </head>
 <body>
     <nav class="nav">
         <div class="container">
-            <a href="/" class="nav-logo">Ascend Profiling</a>
+            <a href="/" class="nav-logo">
+                <i data-lucide="cpu" style="width:20px;height:20px;"></i>
+                Ascend Profiling
+            </a>
             <div class="nav-links">
-                <a href="/">首页</a>
-                <a href="/questions">问题收集</a>
+                <a href="/"><i data-lucide="home" style="width:16px;height:16px;"></i> 首页</a>
+                <a href="/questions"><i data-lucide="message-circle" style="width:16px;height:16px;"></i> 问题收集</a>
+            </div>
+            <div class="nav-actions">
+                <button class="theme-toggle" id="theme-toggle" onclick="toggleTheme()" title="切换主题">
+                    <i data-lucide="moon" style="width:18px;height:18px;"></i>
+                </button>
             </div>
         </div>
     </nav>
 
-    <main class="container">
+    <main class="{% block main_class %}container{% endblock %}">
         {% block content %}{% endblock %}
     </main>
 
     {% block scripts %}{% endblock %}
+    <script>lucide.createIcons();</script>
 </body>
 </html>

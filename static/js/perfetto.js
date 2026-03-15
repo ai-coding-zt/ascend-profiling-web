@@ -1,4 +1,4 @@
-/* ─── Perfetto Embedded Viewer ─── */
+/* ─── Perfetto Embedded Viewer (Same-Origin Proxy) ─── */
 
 async function loadPerfettoTrace(jobId) {
     const statusEl = document.getElementById('trace-status');
@@ -24,32 +24,16 @@ async function loadPerfettoTrace(jobId) {
 
         const buf = await blob.arrayBuffer();
 
-        // Determine Perfetto UI URL: self-hosted or CDN
-        let perfettoUrl = 'https://ui.perfetto.dev/';
-        try {
-            const check = await fetch('/static/perfetto/index.html', { method: 'HEAD' });
-            if (check.ok) perfettoUrl = '/static/perfetto/';
-        } catch(e) {}
-
         // Show the iframe container
         container.style.display = 'block';
         btn.style.display = 'none';
 
-        // For self-hosted (same origin), use iframe directly
-        // For cross-origin (ui.perfetto.dev), use window.open as fallback
-        if (perfettoUrl.startsWith('/')) {
-            // Self-hosted: iframe + postMessage
-            iframe.src = perfettoUrl;
-            iframe.onload = function() {
-                sendTraceToFrame(iframe.contentWindow, buf, jobId, statusEl);
-            };
-        } else {
-            // Cross-origin: open in new window (iframe blocked by X-Frame-Options)
-            container.style.display = 'none';
-            btn.style.display = '';
-            btn.disabled = false;
-            openPerfettoWindow(perfettoUrl, buf, jobId, statusEl);
-        }
+        // Load Perfetto via same-origin proxy (/perfetto/ → ui.perfetto.dev)
+        // This avoids cross-origin issues with postMessage and iframe embedding.
+        // The proxy also handles /v{version}/... asset paths.
+        iframe.src = '/perfetto/';
+
+        waitForPerfettoReady(iframe, buf, jobId, statusEl);
 
     } catch (err) {
         statusEl.textContent = '加载失败: ' + err.message;
@@ -57,20 +41,26 @@ async function loadPerfettoTrace(jobId) {
     }
 }
 
-function sendTraceToFrame(targetWin, buf, jobId, statusEl) {
-    const timer = setInterval(() => targetWin.postMessage('PING', '*'), 50);
-    const timeout = setTimeout(() => {
-        clearInterval(timer);
-        statusEl.textContent = 'Perfetto 连接超时，请刷新重试';
-    }, 30000);
+function waitForPerfettoReady(iframe, buf, jobId, statusEl) {
+    let pingTimer = null;
+    let timeoutTimer = null;
+    let settled = false;
 
-    window.addEventListener('message', function handler(evt) {
+    function cleanup() {
+        settled = true;
+        if (pingTimer) clearInterval(pingTimer);
+        if (timeoutTimer) clearTimeout(timeoutTimer);
+        window.removeEventListener('message', onMessage);
+    }
+
+    function onMessage(evt) {
+        if (settled) return;
         if (evt.data !== 'PONG') return;
-        clearInterval(timer);
-        clearTimeout(timeout);
-        window.removeEventListener('message', handler);
 
-        targetWin.postMessage({
+        cleanup();
+
+        // Send the trace data (same-origin, so '*' target origin is fine)
+        iframe.contentWindow.postMessage({
             perfetto: {
                 buffer: buf,
                 title: 'Ascend Profiling - Job ' + jobId,
@@ -78,17 +68,25 @@ function sendTraceToFrame(targetWin, buf, jobId, statusEl) {
         }, '*');
 
         statusEl.textContent = 'Trace 已加载到 Perfetto 视图中';
-    });
-}
-
-function openPerfettoWindow(baseUrl, buf, jobId, statusEl) {
-    statusEl.textContent = '正在打开 Perfetto 窗口...';
-    const win = window.open(baseUrl);
-
-    if (!win) {
-        statusEl.textContent = '请允许弹窗以打开 Perfetto (浏览器可能阻止了弹窗)';
-        return;
     }
 
-    sendTraceToFrame(win, buf, jobId, statusEl);
+    window.addEventListener('message', onMessage);
+
+    // Start pinging after iframe loads
+    iframe.onload = function() {
+        statusEl.textContent = '等待 Perfetto 初始化...';
+        pingTimer = setInterval(function() {
+            if (settled) return;
+            try {
+                iframe.contentWindow.postMessage('PING', '*');
+            } catch(e) {}
+        }, 200);
+    };
+
+    // Timeout after 90 seconds (Perfetto may need to download WASM)
+    timeoutTimer = setTimeout(function() {
+        if (settled) return;
+        cleanup();
+        statusEl.textContent = 'Perfetto 初始化超时。请检查网络连接后刷新页面重试。';
+    }, 90000);
 }

@@ -8,6 +8,7 @@ from fastapi.templating import Jinja2Templates
 
 from app.config import RESULT_DIR
 from app.database import get_db
+from app.services.job_manager import _generate_summary
 
 router = APIRouter(tags=["pages"])
 templates = Jinja2Templates(directory="app/templates")
@@ -18,10 +19,27 @@ async def index(request: Request):
     db = await get_db()
     try:
         cursor = await db.execute(
-            "SELECT id, filename, status, error, trace_path, created_at, updated_at "
+            "SELECT id, filename, status, error, trace_path, summary, created_at, updated_at "
             "FROM jobs ORDER BY created_at DESC LIMIT 50"
         )
         jobs = [dict(r) for r in await cursor.fetchall()]
+
+        # Backfill summaries for existing done jobs without one
+        for job in jobs:
+            if job["status"] == "done" and not job["summary"]:
+                result_path = RESULT_DIR / f"{job['id']}.json"
+                if result_path.exists():
+                    try:
+                        result = json.loads(result_path.read_text(encoding="utf-8"))
+                        summary = _generate_summary(result)
+                        job["summary"] = summary
+                        await db.execute(
+                            "UPDATE jobs SET summary=? WHERE id=?",
+                            (summary, job["id"]),
+                        )
+                    except Exception:
+                        pass
+        await db.commit()
     finally:
         await db.close()
     return templates.TemplateResponse("index.html", {"request": request, "jobs": jobs})
