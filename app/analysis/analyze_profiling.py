@@ -151,9 +151,64 @@ def analyze_op_summary(filepath, top_n=20):
     total_time = sum(r["duration"] for r in rows)
     total_count = len(rows)
 
-    # Top-N
-    sorted_rows = sorted(rows, key=lambda x: x["duration"], reverse=True)
-    top_ops = sorted_rows[:top_n]
+    # Top-N: group by (type, shapes) — aggregate same-type same-shape ops
+    top_shape_groups = defaultdict(list)
+    for r in rows:
+        key = (r["type"], r["shapes"])
+        top_shape_groups[key].append(r)
+
+    top_groups_list = []
+    for (op_type, shapes), group in top_shape_groups.items():
+        durations = [r["duration"] for r in group]
+        n = len(durations)
+        group_total = sum(durations)
+        mean = group_total / n
+        variance = sum((x - mean) ** 2 for x in durations) / n if n > 1 else 0
+        std = math.sqrt(variance)
+        cv = std / mean if mean > 0 else 0
+        category = group[0]["category"]
+        task_type = group[0]["task_type"]
+        # Average utilization metrics
+        mac = sum(r.get("mac_ratio", 0) for r in group) / n
+        vec = sum(r.get("vec_ratio", 0) for r in group) / n
+        mte2 = sum(r.get("mte2_ratio", 0) for r in group) / n
+        if mac > mte2 and mac > vec and mac > 0:
+            bound = "compute"
+        elif mte2 > mac and mte2 > vec and mte2 > 0:
+            bound = "memory"
+        elif vec > 0:
+            bound = "vector"
+        else:
+            bound = "unknown"
+        top_groups_list.append({
+            "type": op_type,
+            "shapes": shapes,
+            "category": category,
+            "task_type": task_type,
+            "count": n,
+            "total_us": round(group_total, 1),
+            "mean_us": round(mean, 2),
+            "std_us": round(std, 2),
+            "cv": round(cv, 4),
+            "min_us": round(min(durations), 2),
+            "max_us": round(max(durations), 2),
+            "mac_ratio": round(mac, 4),
+            "vec_ratio": round(vec, 4),
+            "mte2_ratio": round(mte2, 4),
+            "bound": bound,
+        })
+
+    # Sort by total time descending
+    top_groups_list.sort(key=lambda x: x["total_us"], reverse=True)
+    top_ops = top_groups_list[:top_n]
+
+    # Add pct and cumulative_pct
+    cum = 0.0
+    for g in top_ops:
+        pct = round(g["total_us"] / total_time * 100, 2) if total_time > 0 else 0
+        cum += pct
+        g["pct"] = pct
+        g["cumulative_pct"] = round(cum, 2)
 
     # Cube vs Vector breakdown
     cat_stats = defaultdict(lambda: {"count": 0, "time": 0.0})
@@ -192,11 +247,11 @@ def analyze_op_summary(filepath, top_n=20):
 
     # Top-5 concentration
     if top_ops:
-        top5_time = sum(o["duration"] for o in top_ops[:5])
+        top5_time = sum(o["total_us"] for o in top_ops[:5])
         top5_pct = top5_time / total_time * 100 if total_time > 0 else 0
         if top5_pct > 50:
-            ops_str = "; ".join(f"{o['name'][:25]}({o['type']},{o['duration']/total_time*100:.1f}%)" for o in top_ops[:5])
-            suggestions.append(f"[HIGH] Top-5 算子占总耗时 {top5_pct:.1f}%，优化收益集中。{ops_str}")
+            ops_str = "; ".join(f"{o['type']}({o['pct']:.1f}%,x{o['count']})" for o in top_ops[:5])
+            suggestions.append(f"[HIGH] Top-5 算子组占总耗时 {top5_pct:.1f}%，优化收益集中。{ops_str}")
 
     # Vector ratio
     vec_info = cube_vector.get("vector", {})
@@ -208,15 +263,15 @@ def analyze_op_summary(filepath, top_n=20):
                    if o.get("mte2_ratio", 0) > o.get("mac_ratio", 0) and o.get("mte2_ratio", 0) > 0.5
                    and "MatMul" in o["type"]]
     if mem_matmuls:
-        detail = "; ".join(f"{o['type']}(mte2={o['mte2_ratio']:.2f}) shapes={o['shapes'][:30]}" for o in mem_matmuls[:3])
-        suggestions.append(f"[HIGH] {len(mem_matmuls)} 个 Top MatMul 算子为搬运受限。{detail}。建议优化数据布局、Shape 对齐到 16 的倍数。")
+        detail = "; ".join(f"{o['type']}(mte2={o['mte2_ratio']:.2f},x{o['count']}) shapes={o['shapes'][:30]}" for o in mem_matmuls[:3])
+        suggestions.append(f"[HIGH] {len(mem_matmuls)} 组 Top MatMul 算子为搬运受限。{detail}。建议优化数据布局、Shape 对齐到 16 的倍数。")
 
     # Low-utilization vector ops
     low_vec = [o for o in top_ops[:20]
                if 0 < o.get("vec_ratio", 0) < 0.1 and o["category"] == "vector"]
     if low_vec:
         types = ", ".join(set(o["type"] for o in low_vec[:5]))
-        suggestions.append(f"[MEDIUM] {len(low_vec)} 个 Top Vector 算子利用率 < 10%（{types}），可能是纯数据转换，检查是否可消除或融合。")
+        suggestions.append(f"[MEDIUM] {len(low_vec)} 组 Top Vector 算子利用率 < 10%（{types}），可能是纯数据转换，检查是否可消除或融合。")
 
     # ── Jitter / 抖动 Analysis ──
     # Group by (type, shapes) to detect performance variance for same-shape ops.
@@ -302,46 +357,13 @@ def analyze_op_summary(filepath, top_n=20):
                 f"（共{j['count']}次, 占{j['pct']:.1f}%）。"
             )
 
-    cum = 0.0
-    top_ops_output = []
-    for o in top_ops:
-        pct = round(o["duration"] / total_time * 100, 2) if total_time > 0 else 0
-        cum += pct
-        mac = o.get("mac_ratio", 0)
-        vec = o.get("vec_ratio", 0)
-        mte2 = o.get("mte2_ratio", 0)
-        if mac > mte2 and mac > vec and mac > 0:
-            bound = "compute"
-        elif mte2 > mac and mte2 > vec and mte2 > 0:
-            bound = "memory"
-        elif vec > 0:
-            bound = "vector"
-        else:
-            bound = "unknown"
-        top_ops_output.append({
-            "name": o["name"],
-            "type": o["type"],
-            "duration_us": o["duration"],
-            "pct": pct,
-            "cumulative_pct": round(cum, 2),
-            "task_type": o["task_type"],
-            "category": o["category"],
-            "shapes": o["shapes"],
-            "block_dim": o["block_dim"],
-            "mac_ratio": mac,
-            "vec_ratio": vec,
-            "mte2_ratio": mte2,
-            "cube_util": o.get("cube_util", 0),
-            "bound": bound,
-        })
-
     return {
         "file": str(filepath),
         "total_ops": total_count,
         "total_time_us": round(total_time, 1),
         "duration_field": dur_field,
         "cube_vector": cube_vector,
-        "top_ops": top_ops_output,
+        "top_ops": top_ops,
         "type_breakdown": type_breakdown[:15],
         "jitter": jitter_results[:20],
         "suggestions": suggestions,
@@ -660,29 +682,14 @@ def print_text_report(op_results, step_results, comm_results, comm_shape_results
             print(f"  │ {label:<22s} {bar} {pct:5.1f}% ({cnt} ops, {t:.0f}us)")
         print(f"  └─────────────────────────────────────────────────────────────────────┘")
 
-        # Top ops - check if pipe metrics available
-        has_pipe = any(o.get("mac_ratio", 0) > 0 or o.get("vec_ratio", 0) > 0 for o in op["top_ops"])
-        print(f"\n  Top-{len(op['top_ops'])} 慢算子:\n")
-        if has_pipe:
-            print(f"  {'#':>3s}  {'名称':<28s}  {'类型':<14s}  {'耗时(us)':>9s}  {'占比':>5s}  {'累计':>5s}  {'Task':>10s}  {'Mac':>5s} {'Vec':>5s} {'MTE2':>5s}  {'Bound':<7s}  {'Shapes':<20s}")
-            print(f"  {'─'*3}  {'─'*28}  {'─'*14}  {'─'*9}  {'─'*5}  {'─'*5}  {'─'*10}  {'─'*5} {'─'*5} {'─'*5}  {'─'*7}  {'─'*20}")
-        else:
-            print(f"  {'#':>3s}  {'名称':<30s}  {'类型':<16s}  {'耗时(us)':>10s}  {'占比':>6s}  {'累计':>6s}  {'Task':>12s}  {'Shapes':<25s}")
-            print(f"  {'─'*3}  {'─'*30}  {'─'*16}  {'─'*10}  {'─'*6}  {'─'*6}  {'─'*12}  {'─'*25}")
-        cum = 0.0
+        # Top ops (grouped by type+shapes)
+        print(f"\n  Top-{len(op['top_ops'])} 慢算子组（按 Type+Shape 聚合）:\n")
+        print(f"  {'#':>3s}  {'类型':<22s}  {'核心':<8s} {'次数':>5s}  {'总耗时(us)':>12s}  {'均值(us)':>10s}  {'占比':>5s}  {'累计':>5s}  {'CV':>7s}  {'Bound':<7s}  {'Shapes':<25s}")
+        print(f"  {'─'*3}  {'─'*22}  {'─'*8} {'─'*5}  {'─'*12}  {'─'*10}  {'─'*5}  {'─'*5}  {'─'*7}  {'─'*7}  {'─'*25}")
         for i, o in enumerate(op["top_ops"], 1):
-            cum += o["pct"]
-            if has_pipe:
-                mac = o.get("mac_ratio", 0)
-                vec = o.get("vec_ratio", 0)
-                mte2 = o.get("mte2_ratio", 0)
-                mac_s = f"{mac:.2f}" if mac > 0 else "  -"
-                vec_s = f"{vec:.2f}" if vec > 0 else "  -"
-                mte2_s = f"{mte2:.2f}" if mte2 > 0 else "  -"
-                bound = o.get("bound", "-")[:7]
-                print(f"  {i:3d}  {o['name'][:28]:<28s}  {o['type'][:14]:<14s}  {o['duration_us']:9.1f}  {o['pct']:4.1f}%  {cum:4.1f}%  {o['task_type'][:10]:>10s}  {mac_s:>5s} {vec_s:>5s} {mte2_s:>5s}  {bound:<7s}  {o['shapes'][:20]:<20s}")
-            else:
-                print(f"  {i:3d}  {o['name'][:30]:<30s}  {o['type'][:16]:<16s}  {o['duration_us']:10.1f}  {o['pct']:5.1f}%  {cum:5.1f}%  {o['task_type'][:12]:>12s}  {o['shapes'][:25]:<25s}")
+            cv_flag = " ⚠" if o.get("cv", 0) > 0.05 else ""
+            bound = o.get("bound", "-")[:7]
+            print(f"  {i:3d}  {o['type'][:22]:<22s}  {o['category']:<8s} {o['count']:5d}  {o['total_us']:12.1f}  {o['mean_us']:10.1f}  {o['pct']:4.1f}%  {o['cumulative_pct']:4.1f}%  {o['cv']:6.2%}{cv_flag} {bound:<7s}  {o['shapes'][:25]:<25s}")
 
         # Type breakdown (top 10)
         print(f"\n  按 OP Type 汇总 (Top-10):\n")

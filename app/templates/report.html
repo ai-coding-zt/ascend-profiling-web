@@ -111,36 +111,43 @@
     </div>
 </div>
 
-<!-- ─── Top-N Slow Operators ─── -->
+<!-- ─── Top-N Slow Operators (grouped by Type+Shape) ─── -->
 <div class="report-section">
-    <h2 class="section-title">Top 慢算子</h2>
+    <h2 class="section-title">Top 慢算子组</h2>
+    <p class="text-muted mb-4" style="font-size:14px;">
+        按 (OP Type, Input Shapes) 聚合相同算子，按总耗时降序排列。CV > 5% 表示同组算子存在性能抖动。
+    </p>
     <div class="table-scroll">
         <table class="data-table" id="top-ops-table">
             <thead>
                 <tr>
                     <th>#</th>
-                    <th>名称</th>
-                    <th>类型</th>
-                    <th class="num">耗时 (us)</th>
+                    <th>OP Type</th>
+                    <th>核心</th>
+                    <th class="num">次数</th>
+                    <th class="num">总耗时 (us)</th>
+                    <th class="num">均值 (us)</th>
                     <th class="num">占比</th>
                     <th class="num">累计</th>
-                    <th>核心</th>
+                    <th class="num">CV</th>
                     <th>Bound</th>
                     <th>Shapes</th>
                 </tr>
             </thead>
             <tbody>
                 {% for o in op.top_ops %}
-                <tr>
+                <tr class="{{ 'jitter-warn' if o.cv > 0.05 else '' }}">
                     <td class="num">{{ loop.index }}</td>
-                    <td class="name-cell" title="{{ o.name }}">{{ o.name[:35] }}</td>
                     <td>{{ o.type }}</td>
-                    <td class="num">{{ "%.1f"|format(o.duration_us) }}</td>
+                    <td><span class="badge badge-{{ 'done' if o.category == 'cube' else ('analyzing' if o.category == 'vector' else 'queued') }}">{{ o.category }}</span></td>
+                    <td class="num">{{ o.count }}</td>
+                    <td class="num">{{ "%.0f"|format(o.total_us) }}</td>
+                    <td class="num">{{ "%.1f"|format(o.mean_us) }}</td>
                     <td class="num">{{ "%.1f"|format(o.pct) }}%</td>
                     <td class="num">{{ "%.1f"|format(o.cumulative_pct) }}%</td>
-                    <td><span class="badge badge-{{ 'done' if o.category == 'cube' else ('analyzing' if o.category == 'vector' else 'queued') }}">{{ o.category }}</span></td>
+                    <td class="num" style="{{ 'color:var(--danger);font-weight:600' if o.cv > 0.05 else '' }}">{{ "%.2f"|format(o.cv * 100) }}%</td>
                     <td>{{ o.bound }}</td>
-                    <td class="name-cell text-mono" title="{{ o.shapes }}">{{ o.shapes[:30] }}</td>
+                    <td class="name-cell text-mono" title="{{ o.shapes }}">{{ o.shapes[:35] }}</td>
                 </tr>
                 {% endfor %}
             </tbody>
@@ -271,34 +278,60 @@
     <h2 class="section-title">Trace 可视化</h2>
     <div class="card">
         <p class="text-muted mb-4" style="font-size:14px;">
-            在 Perfetto UI 中查看详细的算子时间线和设备活动。
+            查看详细的算子时间线和设备活动。
         </p>
-        <button class="btn btn-primary btn-lg" onclick="openInPerfetto('{{ job.id }}')">
-            &#9654; 在 Perfetto 中查看 Trace
+        <button class="btn btn-primary btn-lg" id="trace-open-btn" onclick="loadPerfettoTrace('{{ job.id }}')">
+            &#9654; 加载 Trace 视图
         </button>
         <div id="trace-status"></div>
+    </div>
+    <div id="perfetto-container" style="display:none;margin-top:16px;border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;">
+        <iframe id="perfetto-iframe" style="width:100%;height:75vh;border:none;"></iframe>
     </div>
 </div>
 {% endif %}
 
-<!-- ─── Q&A Section ─── -->
-<div class="qa-section">
-    <h2 class="section-title">问题反馈</h2>
-    <p class="text-muted mb-4" style="font-size:14px;">
-        遇到性能问题？在此提交问题，支持粘贴 Perfetto 截图。
-    </p>
-    <textarea class="qa-textarea" id="qa-input" placeholder="描述你的问题...（支持粘贴截图 Ctrl+V）"></textarea>
-    <div class="qa-images" id="qa-images"></div>
-    <div class="qa-actions">
-        <button class="btn btn-primary" id="qa-submit" onclick="submitQuestion()">提交问题</button>
-        <label class="btn btn-secondary" for="qa-file-input">
-            &#128247; 添加截图
-        </label>
-        <input type="file" id="qa-file-input" accept="image/*" multiple style="display:none;">
-        <span class="qa-hint">Ctrl+V 粘贴截图 | 拖拽图片到文本框</span>
+{% endif %}
+
+<!-- ─── Floating Chat Widget ─── -->
+<div class="chat-toggle" id="chat-toggle" onclick="toggleChat()">
+    <span class="chat-toggle-icon">&#128172;</span>
+    <span class="chat-toggle-label">问一问</span>
+</div>
+
+<div class="chat-panel" id="chat-panel">
+    <div class="chat-header">
+        <div class="chat-header-title">
+            <span>&#129302;</span> Profiling 助手
+        </div>
+        <button class="chat-close" onclick="toggleChat()">&times;</button>
+    </div>
+    <div class="chat-messages" id="chat-messages">
+        <div class="chat-msg chat-msg-bot">
+            <div class="chat-msg-content">
+                你好！我可以帮你分析 profiling 数据中的性能问题。你可以：
+                <ul style="margin:8px 0 0;padding-left:18px;">
+                    <li>询问报告中的任何指标</li>
+                    <li>粘贴 Perfetto 截图提问</li>
+                    <li>获取优化建议</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+    <div class="chat-images" id="chat-images"></div>
+    <div class="chat-input-area">
+        <textarea class="chat-input" id="chat-input" placeholder="输入问题...（Ctrl+V 粘贴截图）" rows="2"></textarea>
+        <div class="chat-input-actions">
+            <label class="chat-attach-btn" for="chat-file-input" title="添加截图">
+                &#128247;
+            </label>
+            <input type="file" id="chat-file-input" accept="image/*" multiple style="display:none;">
+            <button class="chat-send-btn" id="chat-send" onclick="sendChatMessage()">
+                &#10148;
+            </button>
+        </div>
     </div>
 </div>
-{% endif %}
 
 <!-- Report data for JS -->
 <script>
