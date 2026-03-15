@@ -6,13 +6,9 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# trace 文件搜索模式
+# trace 文件搜索模式（使用递归通配符覆盖深层嵌套目录）
 _TRACE_PATTERNS = [
-    "*/trace_view.json",
-    "PROF_*/trace_view.json",
-    "device_*/trace_view.json",
-    "rank_*/trace_view.json",
-    "trace_view.json",
+    "**/trace_view.json",
 ]
 
 # 类别颜色映射
@@ -29,24 +25,48 @@ _CATEGORIES = {
 
 
 def _guess_rank(trace_path: Path, workdir: Path) -> str:
-    """从文件路径推断 rank 编号。"""
+    """从文件路径推断 rank 标识。
+
+    实际路径示例:
+    PROF_xxx/localhost.localdomain_268228_20260205_ascend_pt/ASCEND_PROFILER_OUTPUT/trace_view.json
+    rank_0/trace_view.json
+    device_0/trace_view.json
+    trace_view.json
+    """
     rel = trace_path.relative_to(workdir)
-    parent = rel.parts[0] if len(rel.parts) > 1 else ""
-    # 尝试从目录名提取数字后缀
-    for prefix in ("rank_", "device_", "PROF_"):
-        if parent.startswith(prefix):
-            suffix = parent[len(prefix):]
-            # PROF_000001_... 格式取第一段数字
-            digits = ""
-            for ch in suffix:
-                if ch.isdigit():
-                    digits += ch
-                else:
-                    break
-            if digits:
-                return f"rank{int(digits)}"
-    # 如果只有一个 trace 文件，默认 rank0
-    return f"rank0"
+    parts = rel.parts  # 不含文件名本身，parts[-1] 是 "trace_view.json"
+
+    # 遍历所有目录层级，尝试匹配已知模式
+    for part in parts[:-1]:
+        lower = part.lower()
+        # rank_0, device_0 等直接模式
+        for prefix in ("rank_", "device_"):
+            if lower.startswith(prefix):
+                suffix = part[len(prefix):]
+                digits = ""
+                for ch in suffix:
+                    if ch.isdigit():
+                        digits += ch
+                    else:
+                        break
+                if digits:
+                    return f"rank{int(digits)}"
+
+    # 对于 localhost.localdomain_{pid}_{ts}_ascend_pt 这种格式，
+    # 用 pid 作为标识（同一机器上不同进程代表不同 rank）
+    for part in parts[:-1]:
+        if "_ascend_pt" in part:
+            # 提取 pid: hostname_PID_timestamp_ascend_pt
+            segments = part.split("_")
+            for i, seg in enumerate(segments):
+                if seg.isdigit() and len(seg) >= 3:
+                    return f"pid{seg}"
+
+    # 退回使用父目录名作为标识
+    if len(parts) > 1:
+        return parts[-2].replace(" ", "_")[:20]
+
+    return "rank0"
 
 
 def _classify_event(evt: dict) -> str:
@@ -71,15 +91,24 @@ def _classify_event(evt: dict) -> str:
     return "other"
 
 
+# 事件数量上限 — 超过此数量时自动过滤短事件
+_MAX_EVENTS = 200_000
+
+
 def build_swimlane_data(workdir: Path) -> dict:
     """扫描 workdir 下所有 rank 的 trace 文件，构建统一泳道数据。
+
+    当事件总量超过 _MAX_EVENTS 时，自动过滤掉短事件以保持前端性能。
 
     返回值格式:
     {
         "timeRange": {"start": 0, "end": ...},
         "unit": "us",
         "lanes": [...],
-        "categories": {...}
+        "categories": {...},
+        "totalOriginal": int,
+        "filtered": bool,
+        "minDurFilter": float
     }
     """
     # 1. 发现所有 trace 文件
@@ -190,7 +219,36 @@ def build_swimlane_data(workdir: Path) -> dict:
     if global_min_ts == float("inf"):
         global_min_ts = 0.0
 
-    # 3. 时间归一化 + 排序 + 构建输出结构
+    # 3. 智能过滤 — 如果事件总数过多，逐步提高 dur 门槛
+    total_events = sum(
+        len(evts) for sublane_map in raw_lanes.values() for evts in sublane_map.values()
+    )
+    total_original = total_events
+    min_dur_filter = 0.0
+    filtered = False
+
+    if total_events > _MAX_EVENTS:
+        # 收集所有事件的 dur 值，找到合适的过滤阈值
+        all_durs = []
+        for sublane_map in raw_lanes.values():
+            for evts in sublane_map.values():
+                all_durs.extend(e["dur"] for e in evts)
+        all_durs.sort()
+        # 需要保留 _MAX_EVENTS 个事件，即去掉最短的 N 个
+        cut_idx = len(all_durs) - _MAX_EVENTS
+        if cut_idx > 0 and cut_idx < len(all_durs):
+            min_dur_filter = all_durs[cut_idx]
+            filtered = True
+            # 过滤
+            for sublane_map in raw_lanes.values():
+                for key in sublane_map:
+                    sublane_map[key] = [e for e in sublane_map[key] if e["dur"] >= min_dur_filter]
+            logger.info(
+                "事件过滤: %d → %d (dur >= %.2f us)",
+                total_original, _MAX_EVENTS, min_dur_filter,
+            )
+
+    # 4. 时间归一化 + 排序 + 构建输出结构
     lanes = []
     collected_cats: set[str] = set()
 
@@ -200,11 +258,16 @@ def build_swimlane_data(workdir: Path) -> dict:
 
         for sublane_key in sorted(sublane_map.keys()):
             events = sublane_map[sublane_key]
+            if not events:
+                continue  # 过滤后可能为空
             # 归一化时间戳
             for e in events:
                 e["ts"] = round(e["ts"] - global_min_ts, 2)
                 e["dur"] = round(e["dur"], 2)
                 collected_cats.add(e["cat"])
+            # 去掉 args 以减小 JSON 体积
+            for e in events:
+                e.pop("args", None)
             # 按 ts 排序（前端二分查找依赖）
             events.sort(key=lambda e: e["ts"])
             # 从 sublane_key 提取可读标签
@@ -218,9 +281,17 @@ def build_swimlane_data(workdir: Path) -> dict:
                 "events": events,
             })
 
-        # rank 标签
-        rank_num = rank_id.replace("rank", "")
-        label = f"Device {rank_num}" if rank_num.isdigit() else rank_id
+        if not sublanes:
+            continue
+
+        # rank 标签 — 按顺序编号
+        rank_idx = len(lanes)
+        if rank_id.startswith("rank") and rank_id[4:].isdigit():
+            label = f"Device {rank_id[4:]}"
+        elif rank_id.startswith("pid"):
+            label = f"Device {rank_idx} (PID {rank_id[3:]})"
+        else:
+            label = f"Device {rank_idx}"
 
         lanes.append({
             "id": rank_id,
@@ -243,4 +314,7 @@ def build_swimlane_data(workdir: Path) -> dict:
         "unit": "us",
         "lanes": lanes,
         "categories": categories,
+        "totalOriginal": total_original,
+        "filtered": filtered,
+        "minDurFilter": round(min_dur_filter, 2),
     }

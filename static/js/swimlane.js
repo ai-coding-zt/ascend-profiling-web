@@ -876,7 +876,11 @@
             if (toolbar) toolbar.style.display = 'flex';
             if (btn) btn.style.display = 'none';
             if (statusEl) {
-                statusEl.textContent = `已加载 ${data.lanes.length} 个设备, ${totalEvents} 个事件`;
+                let statusText = `已加载 ${data.lanes.length} 个设备, ${totalEvents} 个事件`;
+                if (data.filtered) {
+                    statusText += ` (已过滤 dur < ${data.minDurFilter}μs 的短事件，原始 ${data.totalOriginal} 个)`;
+                }
+                statusEl.textContent = statusText;
             }
 
             // 创建泳道查看器
