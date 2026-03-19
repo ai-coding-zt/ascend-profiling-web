@@ -1430,13 +1430,15 @@
 
     // ─── 框选询问 AI（供泳道图和报告区域调用） ───
     window.askAIAboutSelection = function(contextText, autoQuestion) {
-        if (!input || !chatPanel) return;
-        // 展开聊天面板（如果收起）
+        console.log('[askAIAboutSelection] 调用, context长度:', contextText?.length, 'question:', autoQuestion?.substring(0, 50));
+        if (!input || !chatPanel) { console.warn('[askAIAboutSelection] input or chatPanel 不存在'); return; }
+        // 确保聊天面板可见（report 页面使用 switchPanel）
+        if (window.switchPanel) window.switchPanel('chat');
         if (chatPanel.classList.contains('collapsed')) {
             const toggle = document.getElementById('chat-toggle');
             if (toggle) toggle.click();
         }
-        // 将 context 写入隐藏字段（通过修改 getCurrentSection 的行为）
+        // 将选区上下文存入全局变量（proxy sendChatMessage 会读取）
         window.__selectionContext = contextText;
         // 填入问题并发送
         input.value = autoQuestion || '请分析上述选区内容。';
@@ -1444,54 +1446,66 @@
         // 自动触发发送
         setTimeout(() => {
             if (window.sendChatMessage) window.sendChatMessage();
-        }, 100);
+        }, 200);
     };
 
     // 代理 sendChatMessage 以支持框选上下文注入
     const _origSend = window.sendChatMessage;
     window.sendChatMessage = async function() {
         if (window.__selectionContext) {
-            // 直接调用 chat API，注入选区上下文
             const text = input.value.trim();
-            if (!text && imagePaths.length === 0) return;
-
-            const sendBtn = document.getElementById('chat-send');
-            sendBtn.disabled = true;
-            addMessage(text || '(截图)', 'user', [...imagePaths]);
-
             const context = window.__selectionContext;
             window.__selectionContext = null;
+            console.log('[AI Selection] 触发框选 AI，context长度:', context.length, 'input:', text.substring(0, 50));
+            if (!text && imagePaths.length === 0) { console.warn('[AI Selection] 消息为空，跳过'); return; }
+
+            const sendBtn = document.getElementById('chat-send');
+            if (sendBtn) sendBtn.disabled = true;
+            addMessage(text || '(框选分析)', 'user', [...imagePaths]);
+
             const msgImages = [...imagePaths];
             input.value = '';
             imagePaths = [];
             imagesDiv.innerHTML = '';
             addThinkingIndicator();
 
+            // 截断过长 context，避免 CLI 参数过大
+            const maxCtx = 8000;
+            const trimmedContext = context.length > maxCtx
+                ? context.substring(0, maxCtx) + '\n...(已截断)'
+                : context;
+
+            const body = {
+                job_id: window.__JOB_ID__ || null,
+                message: text,
+                context: trimmedContext,
+                image_paths: msgImages,
+            };
+            console.log('[AI Selection] fetch body:', JSON.stringify(body).substring(0, 200));
+
             try {
                 const resp = await fetch('/api/chat', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        job_id: window.__JOB_ID__ || null,
-                        message: text,
-                        context: context,
-                        image_paths: msgImages,
-                    }),
+                    body: JSON.stringify(body),
                 });
+                console.log('[AI Selection] resp status:', resp.status, resp.statusText);
                 if (!resp.ok) {
                     removeThinkingIndicator();
-                    addMessage('发送失败，请重试。', 'bot');
-                    sendBtn.disabled = false;
+                    const errText = await resp.text().catch(() => '');
+                    addMessage(`发送失败 (${resp.status}): ${errText || '请重试'}`, 'bot');
+                    if (sendBtn) sendBtn.disabled = false;
                     input.focus();
                     return;
                 }
-                // Stream the response (reuse the same SSE streaming logic)
+                // Stream the response
                 let contentEl = null;
                 const reader = resp.body.getReader();
                 const decoder = new TextDecoder();
                 let fullText = '';
                 let renderPending = false;
                 let lastRenderLen = 0;
+                let chunkCount = 0;
 
                 function doRender() {
                     if (!contentEl || fullText.length === lastRenderLen) return;
@@ -1508,40 +1522,42 @@
                     const { done, value } = await reader.read();
                     if (done) break;
                     const chunk = decoder.decode(value, { stream: true });
+                    chunkCount++;
+                    if (chunkCount <= 3) console.log('[AI Selection] chunk', chunkCount, ':', chunk.substring(0, 100));
                     const lines = chunk.split('\n');
                     for (const line of lines) {
                         if (!line.startsWith('data: ')) continue;
-                        const payload = line.slice(6);
+                        const payload = line.slice(6).trim();
                         if (payload === '[DONE]') continue;
                         try {
                             const parsed = JSON.parse(payload);
-                            if (parsed.type === 'text' || parsed.type === 'content_block_delta') {
-                                const txt = parsed.text || parsed.delta?.text || '';
-                                if (txt) {
-                                    if (!contentEl) { removeThinkingIndicator(); const el = addMessage('', 'bot'); contentEl = el.querySelector('.chat-msg-content'); }
-                                    fullText += txt;
-                                    scheduleRender();
-                                }
-                            }
-                        } catch(e) {
-                            // 尝试直接追加
-                            if (payload && payload !== '[DONE]') {
-                                if (!contentEl) { removeThinkingIndicator(); const el = addMessage('', 'bot'); contentEl = el.querySelector('.chat-msg-content'); }
-                                fullText += payload;
+                            if (parsed.text) {
+                                if (!contentEl) { removeThinkingIndicator(); contentEl = addStreamingMessage(); }
+                                fullText += parsed.text;
                                 scheduleRender();
                             }
-                        }
+                        } catch(e) { /* skip malformed JSON */ }
                     }
                 }
                 doRender();
-                if (!contentEl) { removeThinkingIndicator(); addMessage(fullText || '(无回复)', 'bot'); }
-                sendBtn.disabled = false;
+                console.log('[AI Selection] 流结束, 共', chunkCount, '个chunk, fullText长度:', fullText.length);
+                if (!contentEl) {
+                    removeThinkingIndicator();
+                    if (fullText) {
+                        contentEl = addStreamingMessage();
+                        contentEl.innerHTML = renderMarkdown(fullText);
+                    } else {
+                        addMessage('AI 未返回内容，请查看浏览器控制台排查。', 'bot');
+                    }
+                }
+                if (sendBtn) sendBtn.disabled = false;
                 input.focus();
                 saveChatSession();
             } catch(err) {
+                console.error('[AI Selection] 请求异常:', err);
                 removeThinkingIndicator();
                 addMessage('请求失败: ' + err.message, 'bot');
-                sendBtn.disabled = false;
+                if (sendBtn) sendBtn.disabled = false;
                 input.focus();
             }
             return;

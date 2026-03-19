@@ -2064,6 +2064,128 @@ body {
     font-size: 13px;
 }
 
+.swimlane-sel-list {
+    right: 12px;
+    top: 40px;
+    left: auto;
+    width: 420px;
+    max-height: 70vh;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.swimlane-sel-header {
+    padding: 10px 14px;
+    color: var(--text-secondary);
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+    line-height: 1.5;
+    flex-shrink: 0;
+}
+
+.swimlane-sel-header strong {
+    color: var(--text);
+}
+
+.swimlane-sel-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 4px 0;
+}
+
+.swimlane-sel-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 14px;
+    cursor: pointer;
+    transition: background 0.1s;
+}
+
+.swimlane-sel-item:hover {
+    background: var(--bg-hover);
+}
+
+.swimlane-sel-color {
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    flex-shrink: 0;
+}
+
+.swimlane-sel-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+    color: var(--text);
+}
+
+.swimlane-sel-dur {
+    font-size: 11px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.swimlane-sel-footer {
+    padding: 8px 14px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-shrink: 0;
+    gap: 8px;
+}
+
+.swimlane-sel-pager {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.swimlane-sel-actions {
+    display: flex;
+    gap: 6px;
+}
+
+.swimlane-item-tooltip {
+    position: absolute;
+    z-index: 30;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-md);
+    padding: 10px 14px;
+    min-width: 240px;
+    max-width: 360px;
+    font-size: 12px;
+    pointer-events: none;
+}
+
+.swimlane-item-tip-title {
+    font-weight: bold;
+    font-size: 13px;
+    color: var(--text);
+    margin-bottom: 6px;
+    word-break: break-all;
+}
+
+.swimlane-item-tip-row {
+    color: var(--text-secondary);
+    line-height: 1.6;
+    word-break: break-all;
+}
+
+.swimlane-item-tip-row strong {
+    color: var(--text);
+}
+
 .swimlane-selection-summary {
     color: var(--text-secondary);
     margin-bottom: 8px;
@@ -2083,4 +2205,90 @@ body {
     margin-top: 8px;
     font-size: 13px;
     color: var(--text-secondary);
+}
+
+.swimlane-detail-panel {
+    position: absolute;
+    top: 40px;
+    right: 12px;
+    width: 300px;
+    z-index: 20;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-md);
+    padding: 0;
+    font-size: 13px;
+    overflow: hidden;
+}
+
+.swimlane-detail-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+}
+
+.swimlane-detail-header strong {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 13px;
+    color: var(--text);
+}
+
+.swimlane-detail-color {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border-radius: 3px;
+    flex-shrink: 0;
+}
+
+.swimlane-detail-close {
+    background: none;
+    border: none;
+    font-size: 18px;
+    line-height: 1;
+    cursor: pointer;
+    color: var(--text-light);
+    padding: 0 4px;
+    flex-shrink: 0;
+}
+
+.swimlane-detail-close:hover {
+    color: var(--text);
+}
+
+.swimlane-detail-table {
+    width: 100%;
+    border-collapse: collapse;
+    padding: 0;
+}
+
+.swimlane-detail-table td {
+    padding: 6px 12px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+}
+
+.swimlane-detail-table td:first-child {
+    color: var(--text-secondary);
+    white-space: nowrap;
+    width: 80px;
+    font-size: 12px;
+}
+
+.swimlane-detail-table td:last-child {
+    color: var(--text);
+    word-break: break-all;
+}
+
+.swimlane-detail-actions {
+    padding: 10px 12px;
+    display: flex;
+    gap: 8px;
 }

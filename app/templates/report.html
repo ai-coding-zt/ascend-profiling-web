@@ -123,8 +123,15 @@
 {% if report %}
 
 <div class="page-header" style="padding-top:24px;">
-    <h1>Profiling 分析报告</h1>
-    <p>{{ job.filename }} &middot; {{ job.created_at }}</p>
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+        <div>
+            <h1 style="margin:0;">Profiling 分析报告</h1>
+            <p style="margin:4px 0 0;">{{ job.filename }} &middot; {{ job.created_at }}</p>
+        </div>
+        <button class="btn btn-secondary" onclick="exportMarkdown('{{ job.id }}', '{{ job.filename }}')">
+            <i data-lucide="download"></i> 导出 Markdown
+        </button>
+    </div>
 </div>
 
 {# ═══════════════════════════════════════════════════════════════════════════ #}
@@ -763,6 +770,15 @@
 <script>
     window.__REPORT__ = {{ report_json|safe }};
     window.__JOB_ID__ = '{{ job.id }}';
+
+    function exportMarkdown(jobId, filename) {
+        const a = document.createElement('a');
+        a.href = '/api/jobs/' + jobId + '/export-markdown';
+        a.download = (filename || jobId) + '_report.md';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+    }
 </script>
 {% endblock %}
 

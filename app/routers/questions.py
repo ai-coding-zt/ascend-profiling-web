@@ -261,10 +261,13 @@ async def chat_stream(req: ChatIn):
         "下方提供了完整的分析数据，你可以引用具体数值来回答。"
     )
     if report_context:
+        # 当用户提供了选区上下文时，截断报告上下文以加快响应速度
+        if req.context and len(report_context) > 8000:
+            report_context = report_context[:8000] + "\n...(报告数据已截断，优先使用用户选区上下文)"
         system_prompt += f"\n\n# 当前报告的完整分析数据\n\n{report_context}"
 
     if req.context:
-        system_prompt += f"\n\n用户当前查看的报告章节: {req.context}"
+        system_prompt += f"\n\n# 用户提供的上下文信息\n\n{req.context}"
 
     user_message = req.message
 
@@ -275,6 +278,7 @@ async def chat_stream(req: ChatIn):
                 "--output-format", "stream-json",
                 "--verbose",
                 "--include-partial-messages",
+                "--max-turns", "1",
                 "--system-prompt", system_prompt,
                 user_message,
                 stdout=asyncio.subprocess.PIPE,

@@ -16,3 +16,6 @@ data/profiling.db-shm
 .venv/
 venv/
 *.log
+
+.example_profiling/
+.DS_Store

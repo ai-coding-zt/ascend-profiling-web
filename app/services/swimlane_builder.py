@@ -164,6 +164,15 @@ def build_swimlane_data(workdir: Path) -> dict:
             if ph == "X":
                 dur = float(evt.get("dur", 0))
                 out_evt = {"ts": ts, "dur": dur, "name": evt.get("name", "")}
+                # 保留有用的 args 字段（Input Dims/Type 用于 dtype+shape 展示）
+                raw_args = evt.get("args")
+                if raw_args and isinstance(raw_args, dict):
+                    kept = {}
+                    for k in ("Input Dims", "Input type", "Task Type", "Task Id"):
+                        if k in raw_args:
+                            kept[k] = str(raw_args[k])
+                    if kept:
+                        out_evt["args"] = kept
                 pid_events.setdefault(pid, {}).setdefault(tid, []).append(out_evt)
                 global_min_ts = min(global_min_ts, ts)
                 global_max_ts = max(global_max_ts, ts + dur)
@@ -178,6 +187,14 @@ def build_swimlane_data(workdir: Path) -> dict:
                     b_ts = float(b_evt.get("ts", ts))
                     dur = max(0, ts - b_ts)
                     out_evt = {"ts": b_ts, "dur": dur, "name": b_evt.get("name", "")}
+                    raw_args = b_evt.get("args")
+                    if raw_args and isinstance(raw_args, dict):
+                        kept = {}
+                        for k in ("Input Dims", "Input type", "Task Type", "Task Id"):
+                            if k in raw_args:
+                                kept[k] = str(raw_args[k])
+                        if kept:
+                            out_evt["args"] = kept
                     pid_events.setdefault(pid, {}).setdefault(tid, []).append(out_evt)
                     global_min_ts = min(global_min_ts, b_ts)
                     global_max_ts = max(global_max_ts, b_ts + dur)
